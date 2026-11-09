@@ -128,12 +128,15 @@ Sandbox.__index = Sandbox
 --   trial: fn(code), returns the problem with some code, or nil. Without this, the
 --          sandbox can't start any new trials.
 function Sandbox.new(opts)
-    local self = setmetatable({replaying=false, trial=opts.trial, rules={table.unpack(initial_rules)}}, Sandbox)
-    self.instance = nomsu.new{
+    local self = setmetatable({
+        replaying=false,
+        trial=opts.trial,
+        rules={table.unpack(initial_rules)},
+        output=opts.output,
+    }, Sandbox)
+    self.nomsu = nomsu.new{
         output=function(text)
-            if opts.output and not self.replaying then
-                opts.output(text)
-            end
+            self:on_output(text)
         end,
         environment={
             send=function(request)
@@ -150,13 +153,19 @@ function Sandbox.new(opts)
         limits=REPLAYED_LIMITS,
         random_seed=1,
     }
-    assert(self.instance:run("use \"kernel\""))
-    self.instance:pledge{"stdio"}
+    assert(self.nomsu:run("use \"kernel\""))
+    self.nomsu:pledge{"stdio"}
     return self
 end
 
+function Sandbox:on_output(text)
+    if self.output and not self.replaying then
+        self.output(text)
+    end
+end
+
 function Sandbox:enact(code)
-    local ok, err = self.instance:run(code)
+    local ok, err = self.nomsu:run(code)
     if not ok then error(err, 0) end
     local number = #self.rules + 1
     self.rules[number] = "### Rule " .. number .. ": enacted during the game\n" .. code
@@ -175,7 +184,7 @@ end
 
 function Sandbox:run(code)
     self.tries = 0
-    local ok, a, b = pcall(self.instance.run, self.instance, code)
+    local ok, a, b = pcall(self.nomsu.run, self.nomsu, code)
     if not ok then return false, a end
     return a, b
 end
@@ -188,7 +197,7 @@ function Sandbox:apply(entry)
     if entry.code then
         ok, err = self:run(entry.code)
     else
-        local runtime = self.instance.environment.RUNTIME_ENV
+        local runtime = self.nomsu.environment.RUNTIME_ENV
         runtime.event = {player=entry.player, request=nomsu.plain_copy(entry.request)}
         ok, err = self:run("handle $event")
         runtime.event = nil
@@ -211,7 +220,7 @@ Game.__index = Game
 function Game:copy(opts)
     local sandbox = Sandbox.new(opts)
     sandbox:replay(self.history)
-    sandbox.instance.limits = LIVE_LIMITS
+    sandbox.nomsu.limits = LIVE_LIMITS
     return sandbox
 end
 
@@ -245,7 +254,7 @@ function Game.new(opts)
         if entry.request.type == "join" then self.joined[entry.player] = true end
         if entry.said then self:remember(entry.said) end
     end
-    self.buf = Buffer()
+    self.buf = Buffer.new()
     self.game = Sandbox.new{
         output=function(text) self.buf:write(text) end,
         trial=function(code) return self:trial(code) end,
@@ -290,7 +299,7 @@ end
 -- A player submits some code, which runs in their own sandbox and reports back with
 -- reply(text, kind). Then the game handles the requests they sent.
 function Game:submit(player, code, reply)
-    local buf = Buffer()
+    local buf = Buffer.new()
     local requests = {}
     local sandbox = self:copy{
         output=function(text) buf:write(text) end,
