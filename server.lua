@@ -2,7 +2,7 @@
 -- A multiplayer game of Nomic: players connect over WebSockets and send Nomsu
 -- code, and the rules of the game (which are also Nomsu code) decide what it does.
 --
--- Usage: lua server.lua [--host 127.0.0.1] [--port 8080] [--history history.lua]
+-- Usage: lua server.lua [--host 127.0.0.1] [--port 8080] [--history state/history.lua]
 --
 -- Everything that happens in the game is appended to the history file and replayed
 -- on startup. Delete it to start a fresh game.
@@ -21,7 +21,7 @@ local store = require("store")
 local config = {
     host="127.0.0.1",
     port=8080,
-    history_file=dir.."history.lua",
+    history_file=dir.."state/history.lua",
     max_message=64 * 1024,  -- largest code submission accepted, in bytes
     max_output=64 * 1024,   -- longest single message sent to a client
     send_timeout=10,        -- drop clients that stop reading for this many seconds
