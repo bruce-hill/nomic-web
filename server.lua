@@ -1,8 +1,8 @@
-#!/usr/bin/env luajit
+#!/usr/bin/env lua
 -- A multiplayer game of Nomic: players connect over WebSockets and send Nomsu
 -- code, and the rules of the game (which are also Nomsu code) decide what it does.
 --
--- Usage: luajit server.lua [--host 127.0.0.1] [--port 8080] [--history history.lua]
+-- Usage: lua server.lua [--host 127.0.0.1] [--port 8080] [--history history.lua]
 --
 -- Everything that happens in the game is appended to the history file and replayed
 -- on startup. Delete it to start a fresh game.
@@ -33,7 +33,7 @@ do
         elseif flag == "--port" then config.port = assert(tonumber(value), "--port needs a number")
         elseif flag == "--history" then config.history_file = value
         else
-            io.stderr:write("usage: luajit server.lua [--host HOST] [--port PORT] [--history FILE]\n")
+            io.stderr:write("usage: lua server.lua [--host HOST] [--port PORT] [--history FILE]\n")
             os.exit(1)
         end
         i = i + 2

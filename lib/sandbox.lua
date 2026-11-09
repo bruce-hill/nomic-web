@@ -21,15 +21,11 @@
 --
 -- Limits: every run gets an instruction budget and a wall-clock deadline,
 -- enforced by a count hook. Since hooks never fire inside C functions, C
--- library functions that could do a lot of work are either reimplemented in
--- Lua (string patterns) or charge their cost against the budget up front.
+-- library functions that could do a lot of work charge their cost against the
+-- budget up front. String patterns are the exception: the C matcher can't be
+-- interrupted, so a malicious pattern can still hang the server.
 local net = require("net")
-local patterns = require("patterns")
 local store = require("store")
-
--- With the JIT on, compiled traces can run without ever calling the hook.
-jit.off()
-jit.flush()
 
 local Sandbox = {}
 Sandbox.__index = Sandbox
@@ -93,7 +89,6 @@ function Sandbox.new(opts)
         budget = budget - n
         if budget < 0 then stop("instruction limit exceeded") end
     end
-    patterns.charge = charge
 
     -- Once a run has hit a limit, it must not be able to catch the error and
     -- keep going, so the error-catching functions re-raise it.
@@ -103,9 +98,7 @@ function Sandbox.new(opts)
         return ok, ...
     end
 
-    local safe_string = copy(string, "byte char format len lower upper reverse sub")
-    safe_string.find, safe_string.match = patterns.find, patterns.match
-    safe_string.gmatch, safe_string.gsub = patterns.gmatch, patterns.gsub
+    local safe_string = copy(string, "byte char find format gmatch gsub len lower match upper reverse sub")
     safe_string.rep = function(s, n, sep)
         local len = #tostring(s) * (tonumber(n) or 0) + #tostring(sep or "") * math.max(0, (tonumber(n) or 0) - 1)
         if len > MAX_STRING then error("string.rep result too large", 2) end
@@ -120,7 +113,7 @@ function Sandbox.new(opts)
     string_mt.__index = safe_string
     string_mt.__metatable = false
 
-    local safe_table = copy(table, "concat maxn remove")
+    local safe_table = copy(table, "concat remove")
     safe_table.concat = function(t, sep, i, j)
         charge((j or #t) - (i or 1))
         local result = table.concat(t, sep, i, j)
@@ -140,8 +133,24 @@ function Sandbox.new(opts)
         return table.sort(t, cmp)
     end
 
-    local safe_coroutine = copy(coroutine, "create running status wrap yield")
+    -- Hooks are per-coroutine, so each new coroutine needs its own
+    local function hooked(fn)
+        local co = coroutine.create(fn)
+        debug.sethook(co, hook, "", HOOK_STEP)
+        return co
+    end
+
+    local safe_coroutine = copy(coroutine, "running status yield")
+    safe_coroutine.create = hooked
     safe_coroutine.resume = function(co, ...) return check(coroutine.resume(co, ...)) end
+    safe_coroutine.wrap = function(fn)
+        local co = hooked(fn)
+        local function finish(ok, ...)
+            if not ok then error((...), 0) end
+            return ...
+        end
+        return function(...) return finish(check(coroutine.resume(co, ...))) end
+    end
 
     local world = {}
     self.world = world
@@ -265,7 +274,7 @@ function Sandbox.new(opts)
             host.rollback_to(savepoint)
             error(results[2], 0)
         end
-        return unpack(results, 2, results.n)
+        return table.unpack(results, 2, results.n)
     end
 
     local base = {
@@ -274,11 +283,18 @@ function Sandbox.new(opts)
         assert = assert, error = error, ipairs = ipairs, next = next, pairs = pairs,
         rawequal = rawequal, rawget = rawget, rawset = rawset, select = select,
         tonumber = tonumber, tostring = tostring, type = type,
-        getmetatable = getmetatable, setmetatable = setmetatable,
+        getmetatable = getmetatable,
+        -- A finalizer would run during some later GC cycle, outside any limits
+        setmetatable = function(t, mt)
+            if type(mt) == "table" and rawget(mt, "__gc") ~= nil then
+                error("setmetatable: __gc isn't allowed", 2)
+            end
+            return setmetatable(t, mt)
+        end,
         unpack = function(t, i, j)
             i, j = i or 1, j or #t
             charge(j - i)
-            return unpack(t, i, j)
+            return table.unpack(t, i, j)
         end,
         pcall = function(f, ...) return check(pcall(f, ...)) end,
         xpcall = function(f, handler, ...) return check(xpcall(f, handler, ...)) end,
@@ -288,8 +304,7 @@ function Sandbox.new(opts)
         end,
         string = safe_string,
         table = readonly(safe_table),
-        math = readonly(copy(math, "abs acos asin atan atan2 ceil cos cosh deg exp floor fmod frexp huge ldexp log log10 max min modf pi pow rad random randomseed sin sinh sqrt tan tanh")),
-        bit = readonly(copy(bit, "tobit tohex bnot band bor bxor lshift rshift arshift rol ror bswap")),
+        math = readonly(copy(math, "abs acos asin atan ceil cos deg exp floor fmod huge log max min modf pi rad random randomseed sin sqrt tan")),
         os = readonly(copy(os, "clock date difftime time")),
         coroutine = readonly(safe_coroutine),
 
@@ -343,7 +358,7 @@ function Sandbox.new(opts)
         if not results[1] then rollback_state(committed) end
         host.finish(results[1])
         if collectgarbage("count") > memory_limit_kb / 2 then collectgarbage() end
-        return unpack(results, 1, results.n)
+        return table.unpack(results, 1, results.n)
     end
 
     -- Compiles player input in a scratch environment, where it can read the

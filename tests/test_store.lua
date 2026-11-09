@@ -15,6 +15,8 @@ local original = {
     big = 2^60, small = -0.1, inf = math.huge, ninf = -math.huge, nan = 0/0,
     text = "quote \" backslash \\ newline \n nul \0 high \255",
     list = {1, 2, {3, {4}}},
+    int = 3, float = 3.0, negzero = -0.0, maxint = math.maxinteger, minint = math.mininteger,
+    global = "reserved in some Lua 5.5 builds",
 }
 local text = store.serialize(original)
 local copy = store.deserialize(text)
@@ -23,6 +25,9 @@ expect(copy["end"] == "keyword key" and copy["with space"] == 1 and copy[true] =
 expect(copy.big == 2^60 and copy.small == -0.1 and copy.inf == math.huge and copy.ninf == -math.huge
     and copy.nan ~= copy.nan, "numbers")
 expect(copy.text == original.text, "string escapes")
+expect(math.type(copy.int) == "integer" and math.type(copy.float) == "float" and copy.float == 3
+    and 1 / copy.negzero == -math.huge and copy.maxint == math.maxinteger and copy.minint == math.mininteger
+    and copy.global == original.global, "integers and floats")
 expect(copy.list[3][2][1] == 4, "nested lists")
 expect(store.serialize(copy) == text, "serializing is deterministic")
 

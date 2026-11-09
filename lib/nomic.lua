@@ -146,7 +146,7 @@ Game.__index = Game
 -- Make a sandbox with the kernel's functions. While it's replaying history, its output
 -- is hidden, and (try enacting) gives the same results it gave the first time.
 function Game:new_sandbox(output, send, is_copy)
-    local sandbox = {replaying = false, rules = {unpack(initial_rules)}}
+    local sandbox = {replaying = false, rules = {table.unpack(initial_rules)}}
     sandbox.instance = nomsu.new{
         output = function(text) if not sandbox.replaying then output(text) end end,
         environment = {
@@ -188,7 +188,7 @@ end
 -- Run something from the game's history in a sandbox
 local function run_entry(sandbox, entry)
     sandbox.recorded = entry.recorded
-    if sandbox.replaying and entry.recorded then sandbox.recorded = {unpack(entry.recorded)} end
+    if sandbox.replaying and entry.recorded then sandbox.recorded = {table.unpack(entry.recorded)} end
     local ok, err
     if entry.code then
         ok, err = run(sandbox, entry.code)

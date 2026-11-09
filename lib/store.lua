@@ -4,11 +4,11 @@
 -- read back exactly.
 local store = {}
 
--- LuaJIT can't parse table literals nested ~200 deep
+-- Lua can't parse table literals nested ~200 deep
 local MAX_DEPTH = 100
 
 local keywords = {}
-for word in string.gmatch("and break do else elseif end false for function goto if in local nil not or repeat return then true until while", "%S+") do
+for word in string.gmatch("and break do else elseif end false for function global goto if in local nil not or repeat return then true until while", "%S+") do
     keywords[word] = true
 end
 
@@ -22,11 +22,13 @@ local function path_to(path, k)
 end
 
 local function format_number(n)
+    if math.type(n) == "integer" then return string.format("%q", n) end
     if n ~= n then return "0/0" end
     if n == math.huge then return "1/0" end
     if n == -math.huge then return "-1/0" end
-    if n == math.floor(n) and math.abs(n) < 2^53 then return string.format("%d", n) end
-    return string.format("%.17g", n)
+    local text = string.format("%.17g", n)
+    -- Keep floats like 3.0 from coming back as integers
+    return string.find(text, "^-?%d+$") and text .. ".0" or text
 end
 
 local key_type_order = {boolean = 1, number = 2, string = 3}
