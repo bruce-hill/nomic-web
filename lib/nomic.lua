@@ -3,6 +3,8 @@
 -- Almost everything about the game is defined by its rules, which are Nomsu code that
 -- players can change. This file is only a small kernel, which gives the rules a few
 -- things that can't be done in a sandbox:
+--   (print $text)          Show some text to whoever is watching this sandbox: the player
+--                          whose code is running, or everyone if it's the game's sandbox.
 --   (send $request)        Send a request (plain data) to the game. After the player's
 --                          code finishes, the game handles it with (handle $event).
 --   (enact $code)          Run some code (as text) in this sandbox.
@@ -43,6 +45,8 @@ local LIVE_LIMITS = {instructions=1e6, memory=256 * 1024, seconds=1}
 local kernel = [[
 #!/usr/bin/env nomsu -V8.0.0
 public:
+    (print (*extra arguments*)) means:
+        say (*extra arguments*)
     (propose $code) compiles to:
         $statements = ($code if ($code.type == "Block") else {$code})
         $text = (("\($ as nomsu)" for $ in $statements) joined with "\n")
@@ -81,32 +85,32 @@ public:
         if $handler:
             $handler $event.player (unpack $args 1 $args.n)
         ..else:
-            say "Nothing handles \"\($event.request.type)\" requests."]],
+            print "Nothing handles \"\($event.request.type)\" requests."]],
     [[
 ### Rule 2: anyone who connects becomes a player
 on (join) from $player:
     if ($game.players has $player): return
     $game.players.(#$game.players + 1) = $player
-    say "\$player joined the game."]],
+    print "\$player joined the game."]],
     [[
 ### Rule 3: any player can propose a change to the rules, and it's enacted right away,
 ### unless its code has an error
 on (submit proposal $code) from $player:
     $problem = (try enacting $code)
     if $problem:
-        say "\$player's proposal was rejected, since it has a problem: \$problem"
+        print "\$player's proposal was rejected, since it has a problem: \$problem"
         return
-    say "\$player enacted:\n    \($code, with "\n" -> "\n    ")"
+    print "\$player enacted:\n    \($code, with "\n" -> "\n    ")"
     enact $code]],
     [[
-### Rule 4: players can talk to each other
-on (tell everyone $message) from $player:
-    say "\$player says: \$message"]],
+### Rule 4: players can talk to each other. Printing from a handler shows it to everyone.
+on (say $message) from $player:
+    print "@\$player: \$message"]],
     [[
 ### Rule 5: how to play
 public:
     (help) means:
-        say "Your code runs in your own copy of the game. Only requests affect the real game:\n  tell everyone \"hello\"\n  propose:\n      on (wave at $other) from $player:\n          say \"\\$player waves at \\$other\"\nTo look around, use say:\n  say $game.players\n  say (current rules)"]],
+        print "Your code runs in your own copy of the game. Only requests affect the real game:\n  say \"hello\"\n  propose:\n      on (wave at $other) from $player:\n          print \"\\$player waves at \\$other\"\nTo look around, use print, which only you can see:\n  print $game.players\n  print (current rules)"]],
 }
 
 -- Nomsu's error messages show the code where the error happened. Just keep the message.
@@ -118,32 +122,36 @@ local function short(err)
     return string.match(err, "%^+%s*\n%s*([^\n]-)%s*\n") or string.match(err, "[^\n]*")
 end
 
+-- Sandboxed code can only reach the outside world through its effects, which are given
+-- for each run:
+--   output: fn(text), called with what the code prints
+--   send: fn(request), called with the requests that the code sends
+--   try: fn(code), returns the problem with some code, or nil
+local function ignore() end
+
+local SILENT = {output=ignore, send=ignore, try=function()
+    error("A copy of the game can't try enacting anything.", 0)
+end}
+
+-- Running something from the game's history again gives the same results as the first time
+local function replaying(entry)
+    local tries = 0
+    return {output=ignore, send=ignore, try=function()
+        tries = tries + 1
+        return entry.recorded[tries] or nil
+    end}
+end
+
 local Sandbox = {}
 Sandbox.__index = Sandbox
 
--- Make a blank sandbox with the kernel's functions.
--- opts (all optional):
---   output: fn(text), called with what the code says
---   send: fn(request), called with the requests that the code sends
---   trial: fn(code), returns the problem with some code, or nil. Without this, the
---          sandbox can't start any new trials.
-function Sandbox.new(opts)
-    local self = setmetatable({
-        replaying=false,
-        trial=opts.trial,
-        rules={table.unpack(initial_rules)},
-        output=opts.output,
-    }, Sandbox)
+-- Make a sandbox with the kernel's functions and the starting rules
+function Sandbox.new()
+    local self = setmetatable({rules={table.unpack(initial_rules)}, effects=SILENT}, Sandbox)
     self.nomsu = nomsu.new{
-        output=function(text)
-            self:on_output(text)
-        end,
+        output=function(text) self.effects.output(text) end,
         environment={
-            send=function(request)
-                if opts.send and not self.replaying then
-                    opts.send(nomsu.plain_copy(request))
-                end
-            end,
+            send=function(request) self.effects.send(request) end,
             enact=function(code) self:enact(code) end,
             try_enacting=function(code) return self:try_enacting(code) end,
             current_rules=function() return table.concat(self.rules, "\n\n") end,
@@ -155,13 +163,8 @@ function Sandbox.new(opts)
     }
     assert(self.nomsu:run("use \"kernel\""))
     self.nomsu:pledge{"stdio"}
+    for _, rule in ipairs(initial_rules) do assert(self:run(rule, SILENT)) end
     return self
-end
-
-function Sandbox:on_output(text)
-    if self.output and not self.replaying then
-        self.output(text)
-    end
 end
 
 function Sandbox:enact(code)
@@ -171,54 +174,38 @@ function Sandbox:enact(code)
     self.rules[number] = "### Rule " .. number .. ": enacted during the game\n" .. code
 end
 
--- While replaying, this gives the same results it gave the first time
 function Sandbox:try_enacting(code)
     self.tries = self.tries + 1
     if self.tries > MAX_TRIES then error("That's too many tries at enacting.", 0) end
-    if self.replaying then return table.remove(self.recorded, 1) or nil end
-    if not self.trial then error("A copy of the game can't try enacting anything.", 0) end
-    local problem = self.trial(code)
-    if self.recorded then table.insert(self.recorded, problem or false) end
-    return problem
+    return self.effects.try(code)
 end
 
-function Sandbox:run(code)
-    self.tries = 0
+function Sandbox:run(code, effects)
+    self.effects, self.tries = effects, 0
     local ok, a, b = pcall(self.nomsu.run, self.nomsu, code)
     if not ok then return false, a end
     return a, b
 end
 
--- Run something from the game's history
-function Sandbox:apply(entry)
-    self.recorded = entry.recorded
-    if self.replaying and entry.recorded then self.recorded = {table.unpack(entry.recorded)} end
-    local ok, err
-    if entry.code then
-        ok, err = self:run(entry.code)
-    else
-        local runtime = self.nomsu.environment.RUNTIME_ENV
-        runtime.event = {player=entry.player, request=nomsu.plain_copy(entry.request)}
-        ok, err = self:run("handle $event")
-        runtime.event = nil
-    end
-    self.recorded = nil
+-- The rules handle a player's request
+function Sandbox:handle(entry, effects)
+    local runtime = self.nomsu.environment.RUNTIME_ENV
+    runtime.event = {player=entry.player, request=nomsu.plain_copy(entry.request)}
+    local ok, err = self:run("handle $event", effects)
+    runtime.event = nil
     return ok, err
 end
 
--- Run the game's history again, with the output hidden and requests dropped
 function Sandbox:replay(history)
-    self.replaying = true
-    for _, entry in ipairs(history) do self:apply(entry) end
-    self.replaying = false
+    for _, entry in ipairs(history) do self:handle(entry, replaying(entry)) end
 end
 
 local Game = {}
 Game.__index = Game
 
--- A throwaway copy of the game, made by running its history again. opts are Sandbox.new's.
-function Game:copy(opts)
-    local sandbox = Sandbox.new(opts)
+-- A throwaway copy of the game, made by running its history again
+function Game:fork()
+    local sandbox = Sandbox.new()
     sandbox:replay(self.history)
     sandbox.nomsu.limits = LIVE_LIMITS
     return sandbox
@@ -229,14 +216,19 @@ end
 -- against the limits.
 function Game:trial(code)
     return Limits.run_unlimited(function()
-        local ok, err = self:copy{}:run(code)
+        local ok, err = self:fork():run(code, SILENT)
         if not ok then return short(err) end
     end)
 end
 
-function Game:remember(text)
-    self.recent[#self.recent + 1] = text
-    if #self.recent > MAX_RECENT then table.remove(self.recent, 1) end
+-- Add something that happened to what the game knows about
+function Game:note(entry)
+    table.insert(self.history, entry)
+    if entry.request.type == "join" then self.joined[entry.player] = true end
+    if entry.said then
+        self.recent[#self.recent + 1] = entry.said
+        if #self.recent > MAX_RECENT then table.remove(self.recent, 1) end
+    end
 end
 
 -- opts:
@@ -248,18 +240,9 @@ function Game.new(opts)
     local self = setmetatable({}, Game)
     self.history, self.recent, self.joined = {}, {}, {}
     self.announce, self.record, self.rules_changed = opts.announce, opts.record, opts.rules_changed
-    for _, rule in ipairs(initial_rules) do table.insert(self.history, {code=rule}) end
-    for _, entry in ipairs(opts.entries or {}) do
-        table.insert(self.history, entry)
-        if entry.request.type == "join" then self.joined[entry.player] = true end
-        if entry.said then self:remember(entry.said) end
-    end
-    self.buf = Buffer.new()
-    self.game = Sandbox.new{
-        output=function(text) self.buf:write(text) end,
-        trial=function(code) return self:trial(code) end,
-    }
-    self.game:replay(self.history)
+    for _, entry in ipairs(opts.entries or {}) do self:note(entry) end
+    self.sandbox = Sandbox.new()
+    self.sandbox:replay(self.history)
     return self
 end
 
@@ -269,30 +252,36 @@ function Game:handle(player, request, reply)
     if not ok or #text > MAX_REQUEST then
         return reply("That request can't be sent: " .. (ok and "it's too big" or text), "error")
     end
-    local entry = {player=player, request=request, recorded={}}
-    local rule_count = #self.game.rules
-    local run_ok, err = self.game:apply(entry)
-    local said = self.buf:flush()
+    local buf = Buffer.new()
+    local recorded = {}
+    local entry = {player=player, request=request, recorded=recorded}
+    local rule_count = #self.sandbox.rules
+    local run_ok, err = self.sandbox:handle(entry, {
+        output=function(text) buf:write(text) end,
+        send=ignore,
+        try=function(code)
+            local problem = self:trial(code)
+            table.insert(recorded, problem or false)
+            return problem
+        end,
+    })
+    local said = buf:flush()
     if said ~= "" then entry.said = said end
-    table.insert(self.history, entry)
+    self:note(entry)
     self.record(entry)
-    if entry.said then
-        self:remember(said)
-        self.announce(said)
-    end
-    if #self.game.rules ~= rule_count then self.rules_changed(self.game.rules) end
+    if entry.said then self.announce(said) end
+    if #self.sandbox.rules ~= rule_count then self.rules_changed(self.sandbox.rules) end
     if not run_ok then reply("The game had an error: " .. short(err), "error") end
 end
 
 -- The rules in force, as a list of code, in the order they took effect
 function Game:rules()
-    return self.game.rules
+    return self.sandbox.rules
 end
 
 -- A player joins the game, if they haven't already
 function Game:join(player, reply)
     if self.joined[player] then return end
-    self.joined[player] = true
     self:handle(player, {type="join", args={}}, reply)
 end
 
@@ -301,15 +290,14 @@ end
 function Game:submit(player, code, reply)
     local buf = Buffer.new()
     local requests = {}
-    local sandbox = self:copy{
+    local ok, err = self:fork():run(code, {
         output=function(text) buf:write(text) end,
         send=function(request)
             if #requests >= MAX_REQUESTS then error("That's too many requests at once.", 0) end
-            requests[#requests + 1] = request
+            requests[#requests + 1] = nomsu.plain_copy(request)
         end,
-        trial=function(trial_code) return self:trial(trial_code) end,
-    }
-    local ok, err = sandbox:run(code)
+        try=function(trial_code) return self:trial(trial_code) end,
+    })
     local output = buf:flush()
     if output ~= "" then reply(output, "result") end
     if not ok then reply(short(err), "error") end
