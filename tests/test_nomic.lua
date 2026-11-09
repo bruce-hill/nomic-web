@@ -182,6 +182,35 @@ loaded:submit("alice", "help\nsay (current rules)", reply)
 expect(has(replies, "tell everyone") and has(replies, "Rule 5") and has(replies, "Rule 6: enacted"),
     "help and the current rules")
 
+-- A proposal is tried in a copy of the game, which can print
+local trying = new_game()
+trying:join("alice", reply)
+announced = {}
+trying:submit("alice", 'propose:\n    say "hello from a rule"', reply)
+expect(not has(announced, "rejected"), "proposals that print aren't rejected")
+expect(has(announced, "hello from a rule"), "what an enacted proposal says is announced")
+
+-- The copy has the proposals that were enacted before
+trying:submit("alice", 'propose:\n    public:\n        (zork) means 1', reply)
+announced = {}
+trying:submit("alice", 'propose:\n    $x = (zork)', reply)
+expect(not has(announced, "rejected"), "proposals can use what earlier proposals defined")
+
+-- The copy can't start another trial
+announced = {}
+trying:submit("alice", 'propose:\n    try enacting "do nothing"', reply)
+expect(has(announced, "can't try enacting"), "a copy of the game can't try enacting")
+
+-- Requests sent while replaying history aren't handled again
+trying:submit("alice", [[
+propose:
+    on (ping) from $player:
+        tell everyone "pong"]], reply)
+trying:submit("alice", "ping", reply)
+announced = {}
+trying:submit("alice", "do nothing", reply)
+expect(not has(announced, "pong"), "replaying history doesn't send requests")
+
 if failures > 0 then
     print(failures .. " nomic test(s) failed")
     os.exit(1)
