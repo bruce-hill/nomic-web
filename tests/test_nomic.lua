@@ -232,6 +232,52 @@ announced = {}
 trying:submit("alice", "do nothing", reply)
 expect(not has(announced, "pong"), "replaying history doesn't send requests")
 
+-- Requests that aren't tables are handled and saved like any others, so replaying the
+-- game gives the same state
+local odd = new_game()
+odd:join("alice", reply)
+odd:submit("alice", [[
+propose:
+    $game.events = 0
+    public:
+        (handle $event) means:
+            $game.events += 1]], reply)
+saved = {}
+for _, request in ipairs({"5", "(yes)", '"text"'}) do
+    local ok, err = pcall(odd.submit, odd, "alice", "send " .. request, reply)
+    expect(ok, "sending " .. request .. " doesn't fail (got " .. tostring(err) .. ")")
+end
+expect(#saved == 3, "requests that aren't tables are saved")
+replies = {}
+odd:submit("alice", "print $game.events", reply)
+local live_events = replies[#replies]
+entries = {}
+for _, entry in ipairs(odd.history) do entries[#entries + 1] = store.deserialize(store.serialize(entry)) end
+replies = {}
+new_game(entries):submit("alice", "print $game.events", reply)
+expect(live_events == "result: 3" and replies[#replies] == live_events,
+    "replaying requests that aren't tables gives the same state (live "
+    .. tostring(live_events) .. ", replayed " .. tostring(replies[#replies]) .. ")")
+
+-- Announcements are numbered by their place in the history, the same after replaying
+local seqs = {}
+local numbered = Game.new({
+    announce=function(_, seq) seqs[#seqs + 1] = seq end,
+    record=function() end,
+    rules_changed=function() end,
+})
+numbered:join("alice", reply)
+numbered:submit("alice", "do nothing", reply)
+numbered:join("bob", reply)
+numbered:submit("bob", 'say "hi"', reply)
+expect(table.concat(seqs, " ") == "1 2 3", "announcements are numbered by history entry (got "
+    .. table.concat(seqs, " ") .. ")")
+local renumbered = new_game(numbered.history)
+local recent = {}
+for i, said in ipairs(renumbered.recent) do recent[i] = said.seq .. "=" .. said.text end
+expect(table.concat(recent, " ") == "1=alice joined the game. 2=bob joined the game. 3=@bob: hi",
+    "recent announcements keep their numbers (got " .. table.concat(recent, " ") .. ")")
+
 if failures > 0 then
     print(failures .. " nomic test(s) failed")
     os.exit(1)

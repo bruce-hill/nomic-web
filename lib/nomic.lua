@@ -219,19 +219,23 @@ function Game:trial(code)
     end)
 end
 
--- Add something that happened to what the game knows about
+-- Add something that happened to what the game knows about. This must not fail: the
+-- game's sandbox has already handled the entry, so it has to be in the history too.
+-- Requests can be any plain data, like a number, not just tables.
 function Game:note(entry)
     table.insert(self.history, entry)
-    if entry.request.type == "join" then self.joined[entry.player] = true end
+    local request = entry.request
+    if type(request) == "table" and request.type == "join" then self.joined[entry.player] = true end
     if entry.said then
-        self.recent[#self.recent + 1] = entry.said
+        self.recent[#self.recent + 1] = {seq=#self.history, text=entry.said}
         if #self.recent > MAX_RECENT then table.remove(self.recent, 1) end
     end
 end
 
 -- opts:
 --   entries: what happened in earlier sessions (the entries passed to record)
---   announce: fn(text), called with what the game says to everyone
+--   announce: fn(text, seq), called with what the game says to everyone, and its entry's
+--             position in the history (announcements in self.recent have the same seq)
 --   record: fn(entry), called with each new entry, which must be saved to replay later
 --   rules_changed: fn(rules), called with the list of rules when one is enacted
 function Game.new(opts)
@@ -267,7 +271,7 @@ function Game:handle(player, request, reply)
     if said ~= "" then entry.said = said end
     self:note(entry)
     self.record(entry)
-    if entry.said then self.announce(said) end
+    if entry.said then self.announce(said, #self.history) end
     if #self.sandbox.rules ~= rule_count then self.rules_changed(self.sandbox.rules) end
     if not run_ok then reply("The game had an error: " .. short(err), "error") end
 end

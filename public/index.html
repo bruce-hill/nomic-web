@@ -134,6 +134,9 @@
 const $ = (id) => document.getElementById(id);
 const log = $("log"), code = $("code"), runBtn = $("run");
 let socket = null, myName = null, history = [], historyPos = 0, draft = "";
+// The seq of the last announcement shown. On connecting, the server sends its recent
+// announcements again, and the ones already in the log are skipped.
+let lastSeq = 0;
 
 // Syntax highlighting for Nomsu 8 (see nomsu.8.peg). This is a lexer rather than a parser:
 // it only tells words, operators, values, text, and comments apart, and tracks nesting well
@@ -277,6 +280,8 @@ function connect(name) {
     if (msg.type === "welcome") {
       welcomed = true;
       myName = msg.name;
+      // A shorter history means the server started a new game
+      if (msg.seq < lastSeq) lastSeq = 0;
       localStorage.setItem("lua-world-name", myName);
       $("login").classList.add("hidden");
       setStatus(true, myName);
@@ -296,6 +301,10 @@ function connect(name) {
     } else if (msg.type === "rules") {
       showRules(msg.rules);
     } else if (msg.type === "message") {
+      if (msg.seq !== undefined) {
+        if (msg.seq <= lastSeq) return;
+        lastSeq = msg.seq;
+      }
       addLine(msg.text, msg.kind);
     }
   };

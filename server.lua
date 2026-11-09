@@ -16,7 +16,7 @@ local websocket = require("http.websocket")
 local condition = require("cqueues.condition")
 local json = require("json")
 local Game = require("nomic")
-local store = require("store")
+local History = require("history")
 
 local config = {
     host="127.0.0.1",
@@ -75,39 +75,16 @@ local function broadcast(value)
     for _, name in ipairs(user_order) do queue_json(by_name[name], value) end
 end
 
--- Sends a message to one player
-local function send(name, text, kind)
+-- Sends a message to one player. Announcements have a seq (their position in the
+-- game's history), so a client that reconnects can skip the ones it already has.
+local function send(name, text, kind, seq)
     local conn = by_name[name]
     if not conn then return false end
     if #text > config.max_output then
         text = string.sub(text, 1, config.max_output) .. "\n... (truncated)"
     end
-    queue_json(conn, {type="message", kind=kind, text=text})
+    queue_json(conn, {type="message", kind=kind, text=text, seq=seq})
     return true
-end
-
--- Entries are saved with a "--" line after each, which can't appear inside a quoted
--- string in the saved data (newlines in strings are written with a backslash)
-local function save_entry(entry)
-    local f, err = io.open(config.history_file, "ab")
-    if f then
-        local _
-        _, err = f:write(store.serialize(entry), "\n--\n")
-        f:close()
-    end
-    if err then log("saving the game failed:", err) end
-end
-
-local function load_entries()
-    local entries = {}
-    local f = io.open(config.history_file, "rb")
-    if f then
-        for text in string.gmatch(f:read("*a"), "(.-)\n%-%-\n") do
-            entries[#entries + 1] = store.deserialize(text)
-        end
-        f:close()
-    end
-    return entries
 end
 
 local function valid_name(name)
@@ -130,11 +107,13 @@ local function play(server, ws, name)
     user_order[#user_order + 1] = name
     server.cq:wrap(write_messages, conn)
     log(name, "connected")
-    queue_json(conn, {type="welcome", name=name})
+    queue_json(conn, {type="welcome", name=name, seq=#game.history})
     broadcast({type="users", users=user_order})
     queue_json(conn, {type="rules", rules=game:rules()})
-    for _, text in ipairs(game.recent) do send(name, text, "announce") end
-    game:join(name, function(text, kind) send(name, text, kind) end)
+    for _, said in ipairs(game.recent) do send(name, said.text, "announce", said.seq) end
+    -- Like submitting, joining must not skip the cleanup below if it fails
+    local ok, err = pcall(game.join, game, name, function(text, kind) send(name, text, kind) end)
+    if not ok then log("internal error:", tostring(err)) end
 
     for text in ws:each() do
         if #text > config.max_message then break end
@@ -193,13 +172,19 @@ local function on_stream(server, stream)
     play(server, ws, name)
 end
 
-local entries = load_entries()
+local history, entries, dropped = History.open(config.history_file)
+if dropped then
+    log("dropped an unfinished entry at the end of", config.history_file .. ":", string.format("%q", dropped))
+end
 game = Game.new({
     entries=entries,
-    announce=function(text)
-        for _, name in ipairs(user_order) do send(name, text, "announce") end
+    announce=function(text, seq)
+        for _, name in ipairs(user_order) do send(name, text, "announce", seq) end
     end,
-    record=save_entry,
+    record=function(entry)
+        local ok, err = history:append(entry, game.history)
+        if not ok then log("saving the game failed (it'll be saved in full next time):", tostring(err)) end
+    end,
     rules_changed=function(rules) broadcast({type="rules", rules=rules}) end,
 })
 if #entries > 0 then log("replayed", #entries, "events from", config.history_file) end
