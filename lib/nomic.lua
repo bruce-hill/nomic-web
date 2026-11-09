@@ -124,19 +124,19 @@ end
 
 -- Sandboxed code can only reach the outside world through its effects, which are given
 -- for each run:
---   output: fn(text), called with what the code prints
+--   print: fn(text), called with what the code prints
 --   send: fn(request), called with the requests that the code sends
 --   try: fn(code), returns the problem with some code, or nil
 local function ignore() end
 
-local SILENT = {output=ignore, send=ignore, try=function()
+local SILENT = {print=ignore, send=ignore, try=function()
     error("A copy of the game can't try enacting anything.", 0)
 end}
 
 -- Running something from the game's history again gives the same results as the first time
 local function replaying(entry)
     local tries = 0
-    return {output=ignore, send=ignore, try=function()
+    return {print=ignore, send=ignore, try=function()
         tries = tries + 1
         return entry.recorded[tries] or nil
     end}
@@ -149,7 +149,7 @@ Sandbox.__index = Sandbox
 function Sandbox.new()
     local self = setmetatable({rules={table.unpack(initial_rules)}, effects=SILENT}, Sandbox)
     self.nomsu = nomsu.new{
-        output=function(text) self.effects.output(text) end,
+        output=function(text) self.effects.print(text) end,
         environment={
             send=function(request) self.effects.send(request) end,
             enact=function(code) self:enact(code) end,
@@ -257,7 +257,7 @@ function Game:handle(player, request, reply)
     local entry = {player=player, request=request, recorded=recorded}
     local rule_count = #self.sandbox.rules
     local run_ok, err = self.sandbox:handle(entry, {
-        output=function(text) buf:write(text) end,
+        print=function(text) buf:write(text) end,
         send=ignore,
         try=function(code)
             local problem = self:trial(code)
@@ -291,7 +291,7 @@ function Game:submit(player, code, reply)
     local buf = Buffer.new()
     local requests = {}
     local ok, err = self:fork():run(code, {
-        output=function(text) buf:write(text) end,
+        print=function(text) buf:write(text) end,
         send=function(request)
             if #requests >= MAX_REQUESTS then error("That's too many requests at once.", 0) end
             requests[#requests + 1] = nomsu.plain_copy(request)
