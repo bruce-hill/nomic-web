@@ -29,9 +29,9 @@ package.path = "/usr/local/share/nomsu/8.0.0/?.lua;" .. package.path
 local nomsu = require("nomsu_library")
 local Limits = require("nomsu_limits")
 local store = require("store")
+local Buffer = require("buffer")
 
 local NOMSU_LIB = "/usr/local/share/nomsu/8.0.0/lib"
-local MAX_OUTPUT = 64 * 1024
 local MAX_REQUEST = 64 * 1024
 local MAX_REQUESTS = 16       -- requests that one submission can send
 local MAX_TRIES = 2           -- times that one run can use (try enacting)
@@ -118,21 +118,6 @@ local function short(err)
     return string.match(err, "%^+%s*\n%s*([^\n]-)%s*\n") or string.match(err, "[^\n]*")
 end
 
--- Collects a run's output (up to a limit), and returns all of it when asked
-local function collector()
-    local parts, size = {}, 0
-    return function(text)
-        if size < MAX_OUTPUT then
-            parts[#parts + 1] = text
-            size = size + #text
-        end
-    end, function()
-        local text = table.concat(parts)
-        parts, size = {}, 0
-        return (string.gsub(text, "\n$", ""))
-    end
-end
-
 local function run(sandbox, code)
     sandbox.tries = 0
     local ok, a, b = pcall(sandbox.instance.run, sandbox.instance, code)
@@ -145,10 +130,14 @@ Game.__index = Game
 
 -- Make a sandbox with the kernel's functions. While it's replaying history, its output
 -- is hidden, and (try enacting) gives the same results it gave the first time.
-function Game:new_sandbox(output, send, is_copy)
+function Game:new_sandbox(buf, send, is_copy)
     local sandbox = {replaying=false, rules={table.unpack(initial_rules)}}
     sandbox.instance = nomsu.new{
-        output=function(text) if not sandbox.replaying then output(text) end end,
+        output=function(text)
+            if not sandbox.replaying then
+                buf:write(text)
+            end
+        end,
         environment={
             send=function(request) if send then send(nomsu.plain_copy(request)) end end,
             enact=function(code)
@@ -203,8 +192,8 @@ local function run_entry(sandbox, entry)
 end
 
 -- A copy of the game, made by running its history again
-function Game:build_sandbox(output, send, is_copy)
-    local sandbox = self:new_sandbox(output, send, is_copy)
+function Game:build_sandbox(buf, send, is_copy)
+    local sandbox = self:new_sandbox(buf, send, is_copy)
     sandbox.replaying = true
     for _, entry in ipairs(self.history) do run_entry(sandbox, entry) end
     sandbox.replaying = false
@@ -231,8 +220,8 @@ function Game.new(opts)
         if entry.request.type == "join" then self.joined[entry.player] = true end
         if entry.said then self:remember(entry.said) end
     end
-    self.write, self.flush = collector()
-    self.game = self:build_sandbox(self.write)
+    self.buf = Buffer()
+    self.game = self:build_sandbox(self.buf)
     return self
 end
 
@@ -245,7 +234,7 @@ function Game:handle(player, request, reply)
     local entry = {player=player, request=request, recorded={}}
     local rule_count = #self.game.rules
     local run_ok, err = run_entry(self.game, entry)
-    local said = self.flush()
+    local said = self.buf:flush()
     if said ~= "" then entry.said = said end
     table.insert(self.history, entry)
     self.record(entry)
@@ -272,15 +261,15 @@ end
 -- A player submits some code, which runs in their own sandbox and reports back with
 -- reply(text, kind). Then the game handles the requests they sent.
 function Game:submit(player, code, reply)
-    local write, flush = collector()
+    local buf = Buffer()
     local requests = {}
-    local sandbox = self:build_sandbox(write, function(request)
+    local sandbox = self:build_sandbox(buf, function(request)
         if #requests >= MAX_REQUESTS then error("That's too many requests at once.", 0) end
         requests[#requests + 1] = request
     end)
     sandbox.instance.limits = LIVE_LIMITS
     local ok, err = run(sandbox, code)
-    local output = flush()
+    local output = buf:flush()
     if output ~= "" then reply(output, "result") end
     if not ok then reply(short(err), "error") end
     for _, request in ipairs(requests) do
