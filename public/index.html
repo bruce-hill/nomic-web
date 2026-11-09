@@ -380,6 +380,18 @@ code.addEventListener("keydown", (e) => {
       code.setSelectionRange(lineStart, start);
       typeText(before.slice(4) + ".");
     }
+  } else if (e.key === "Backspace" && !mod && !e.altKey && code.selectionStart === code.selectionEnd) {
+    // With only indentation before the cursor, delete back to the previous level of indentation
+    const start = code.selectionStart, lineStart = code.value.lastIndexOf("\n", start - 1) + 1;
+    const before = code.value.slice(lineStart, start);
+    if (/^ +$/.test(before)) {
+      e.preventDefault();
+      code.setSelectionRange(start - (before.length % 4 || 4), start);
+      if (!document.execCommand("delete")) {
+        code.setRangeText("", code.selectionStart, code.selectionEnd, "end");
+        renderCode();
+      }
+    }
   } else if (e.key === "Tab" && !e.shiftKey) {
     e.preventDefault();
     typeText("    ");
