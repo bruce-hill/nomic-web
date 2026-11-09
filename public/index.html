@@ -50,9 +50,26 @@
   .msg.proposal::first-line { color: var(--accent); font-weight: 600; }
   form#editor { display: flex; gap: 8px; padding: 10px 16px 14px; border-top: 1px solid var(--border);
                 background: var(--panel); }
-  textarea { flex: 1; min-height: 84px; max-height: 40vh; resize: vertical; background: var(--bg);
-             color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
-             font: 13px/1.45 var(--mono); tab-size: 4; }
+  /* The textarea's text is invisible, and a highlighted copy of it shows through from behind */
+  #code-wrap { flex: 1; min-width: 0; position: relative; display: flex; }
+  textarea, #code-hl { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+                       font: 13px/1.45 var(--mono); tab-size: 4; white-space: pre-wrap;
+                       overflow-wrap: break-word; word-break: normal; scrollbar-gutter: stable; }
+  textarea { flex: 1; min-height: 84px; max-height: 40vh; resize: vertical; position: relative;
+             background: transparent; color: transparent; caret-color: var(--text); }
+  textarea::placeholder { color: var(--muted); }
+  textarea::selection { background: rgba(122,162,247,.3); color: transparent; }
+  #code-hl { position: absolute; inset: 0; margin: 0; overflow: hidden; pointer-events: none;
+             background: var(--bg); border-color: transparent; color: var(--text); }
+  .nt-word { color: #e6e9f2; }
+  .nt-op { color: #89ddff; }
+  .nt-var { color: #bb9af7; }
+  .nt-num { color: #ff9e64; }
+  .nt-text { color: #9ece6a; }
+  .nt-esc { color: #2ac3de; }
+  .nt-key { color: #73daca; }
+  .nt-punct { color: #9aa5ce; }
+  .nt-comment { color: #5c6582; font-style: italic; }
   textarea:focus, input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   button { background: var(--accent); color: #11131a; border: 0; border-radius: 6px; padding: 0 18px;
            font-weight: 600; cursor: pointer; }
@@ -95,7 +112,10 @@
   </aside>
 </main>
 <form id="editor">
-  <textarea id="code" spellcheck="false" placeholder="say &quot;hello&quot;   — Ctrl+Enter to run, help for how to play"></textarea>
+  <div id="code-wrap">
+    <pre id="code-hl" aria-hidden="true"></pre>
+    <textarea id="code" spellcheck="false" placeholder="say &quot;hello&quot;   — Ctrl+Enter to run, help for how to play"></textarea>
+  </div>
   <button id="run" type="submit" disabled>Run</button>
 </form>
 
@@ -115,11 +135,115 @@ const $ = (id) => document.getElementById(id);
 const log = $("log"), code = $("code"), runBtn = $("run");
 let socket = null, myName = null, history = [], historyPos = 0, draft = "";
 
+// Syntax highlighting for Nomsu 8 (see nomsu.8.peg). This is a lexer rather than a parser:
+// it only tells words, operators, values, text, and comments apart, and tracks nesting well
+// enough to know when text interpolations and multi-line texts end.
+const NOMSU_WORD = /[A-Za-z0-9_\u0080-\u21FF\u2300-\u29FF\u2B00-\uFFFF]+/y;
+const NOMSU_OP = /[#'`~@^&*+=<>?\/%!|\\\-\u2200-\u22FF\u2A00-\u2AFF]+/y;
+const NOMSU_NUM = /-?(?:0x[0-9a-fA-F]+(?:_+[0-9a-fA-F]+)*|[0-9]+(?:_+[0-9]+)*(?:\.[0-9]+(?:_+[0-9]+)*)?)/y;
+const NOMSU_ESCAPE = /\\(?:["\\abtnvfr]|[xX][0-9a-fA-F]{2}|[0-9]{1,3})/y;
+
+function highlightNomsu(src) {
+  let html = "", i = 0;
+  const stack = [{mode: "code"}];
+  // Add the next `len` characters to the output with the class `cls`
+  const take = (cls, len) => {
+    const text = src.slice(i, i + len).replace(/[&<>]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"})[c]);
+    html += cls ? `<span class="nt-${cls}">${text}</span>` : text;
+    i += len;
+  };
+  const match = (re, pos = i) => { re.lastIndex = pos; const m = re.exec(src); return m ? m[0].length : 0; };
+  const lineStart = (pos) => src.lastIndexOf("\n", pos - 1) + 1;
+  const indentAt = (pos) => { let n = 0; while (src[pos + n] === " ") n++; return n; };
+  const eol = (pos) => { const e = src.indexOf("\n", pos); return e < 0 ? src.length : e; };
+  // "$name", "$", or "$(...)", which is code inside
+  const variable = () => {
+    if (src[i + 1] === "(") { take("var", 2); stack.push({mode: "code", close: ")", cls: "var"}); }
+    else take("var", 1 + match(NOMSU_WORD, i + 1));
+  };
+  // After a "\" in text: "\$var", "\(code)", or "\{table}"
+  const interpolation = () => {
+    const c = src[i + 1];
+    if (c === "$") { take("esc", 1); variable(); return true; }
+    if (c === "(" || c === "{") {
+      take("esc", 2);
+      stack.push({mode: "code", close: c === "(" ? ")" : "}", cls: "esc"});
+      return true;
+    }
+    return false;
+  };
+
+  if (src.startsWith("#!")) take("comment", eol(0));
+  while (i < src.length) {
+    const top = stack[stack.length - 1], c = src[i];
+    if (top.mode === "text") {
+      let n;
+      if (c === '"') { take("text", 1); stack.pop(); }
+      else if (c === "\n") stack.pop(); // Missing its closing quote
+      else if ((n = match(NOMSU_ESCAPE))) take("esc", n);
+      else if (c === "\\" && interpolation()) {}
+      else take("text", Math.max(1, src.slice(i).search(/["\\\n]|$/)));
+    } else if (top.mode === "block text") {
+      if (c === "\n") { take(null, 1); continue; }
+      if (i === lineStart(i)) {
+        const n = indentAt(i), blank = i + n === eol(i);
+        if (blank) { take(null, n); continue; }
+        if (n === top.indent && src.startsWith('")', i + n)) {
+          take(null, n); take("text", 2); stack.pop(); continue;
+        } else if (n === top.indent && src.startsWith("....", i + n)) {
+          take(null, n); take("esc", 4); continue;
+        } else if (n < top.indent + 4) { stack.pop(); continue; } // Missing its closing ")
+        take(null, top.indent + 4);
+        continue;
+      }
+      if (src.startsWith("\\\\", i)) take("esc", 2);
+      else if (c === "\\" && interpolation()) {}
+      else take("text", Math.max(1, src.slice(i).search(/[\\\n]|$/)));
+    } else {
+      let n;
+      if (c === " " || c === "\n" || c === "\t" || c === "\r") take(null, 1);
+      else if (src.startsWith("###", i)) {
+        // Comments continue onto following lines that are indented further
+        const indent = indentAt(lineStart(i));
+        let end = eol(i);
+        for (let s = end + 1; s < src.length; s = eol(s) + 1) {
+          if (s + indentAt(s) === eol(s)) continue; // Blank line
+          if (indentAt(s) < indent + 4) break;
+          end = eol(s);
+        }
+        take("comment", end - i);
+      }
+      else if (src.startsWith("..", i) && !src.slice(lineStart(i), i).trim()) take("punct", 2);
+      else if (src.startsWith('("', i) && i + 2 === eol(i)) {
+        take("text", 2);
+        stack.push({mode: "block text", indent: indentAt(lineStart(i))});
+      }
+      else if (c === '"') { take("text", 1); stack.push({mode: "text"}); }
+      else if (c === "$") variable();
+      else if ((/[0-9]/.test(c) || (c === "-" && /[0-9]/.test(src[i + 1] || "")
+                && (i === 0 || ";,. \r\n\t({[".includes(src[i - 1])))) && (n = match(NOMSU_NUM)))
+        take("num", n);
+      else if (c === ".") {
+        take("punct", 1);
+        if ((n = match(NOMSU_WORD) || match(NOMSU_OP)) && !/[0-9]/.test(src[i])) take("key", n);
+      }
+      else if (c === "(" || c === "{") { take("punct", 1); stack.push({mode: "code", close: c === "(" ? ")" : "}"}); }
+      else if ((c === ")" || c === "}") && top.close === c) { take(top.cls || "punct", 1); stack.pop(); }
+      else if (":,)}".includes(c)) take("punct", 1);
+      else if ((n = match(NOMSU_OP))) take("op", n);
+      else if ((n = match(NOMSU_WORD))) take("word", n);
+      else take(null, 1);
+    }
+  }
+  return html;
+}
+
 function addLine(text, kind) {
   const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   const div = document.createElement("div");
   div.className = "msg " + (kind || "text");
-  div.textContent = text;
+  if (kind === "input") div.innerHTML = highlightNomsu(text);
+  else div.textContent = text;
   log.appendChild(div);
   while (log.childNodes.length > 2000) log.removeChild(log.firstChild);
   if (atBottom) log.scrollTop = log.scrollHeight;
@@ -129,7 +253,7 @@ function showRules(rules) {
   const list = $("rule-list"), grew = list.children.length && rules.length > list.children.length;
   list.replaceChildren(...rules.map((rule) => {
     const pre = document.createElement("pre");
-    pre.textContent = rule;
+    pre.innerHTML = highlightNomsu(rule);
     return pre;
   }));
   if (grew) $("rules").scrollTop = $("rules").scrollHeight;
@@ -206,9 +330,30 @@ function submit() {
   if (history[history.length - 1] !== text) history.push(text);
   historyPos = history.length;
   code.value = "";
+  renderCode();
 }
 
+// A trailing newline needs something after it to take up space like it does in the textarea
+function renderCode() {
+  $("code-hl").innerHTML = highlightNomsu(code.value) + (code.value.endsWith("\n") ? " " : "");
+  syncScroll();
+}
+function syncScroll() {
+  $("code-hl").scrollTop = code.scrollTop;
+  $("code-hl").scrollLeft = code.scrollLeft;
+}
+code.addEventListener("input", renderCode);
+code.addEventListener("scroll", syncScroll);
+
 $("editor").addEventListener("submit", (e) => { e.preventDefault(); submit(); code.focus(); });
+
+// Replace the selection with `text` as if it were typed, so that undo works
+function typeText(text) {
+  if (!document.execCommand("insertText", false, text)) {
+    code.setRangeText(text, code.selectionStart, code.selectionEnd, "end");
+    renderCode();
+  }
+}
 
 code.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;
@@ -220,9 +365,24 @@ code.addEventListener("keydown", (e) => {
     if (historyPos === history.length) draft = code.value;
     historyPos = Math.max(0, Math.min(history.length, historyPos + (e.key === "ArrowUp" ? -1 : 1)));
     code.value = historyPos === history.length ? draft : history[historyPos];
+    renderCode();
+  } else if ((e.key === "Enter" || e.key === ".") && !mod && !e.shiftKey && !e.altKey && !e.isComposing) {
+    const start = code.selectionStart, lineStart = code.value.lastIndexOf("\n", start - 1) + 1;
+    const before = code.value.slice(lineStart, start);
+    if (e.key === "Enter") {
+      // Keep the indentation, and indent further after a line that opens a block, parens, table, or text
+      e.preventDefault();
+      const opens = !before.trimStart().startsWith("###") && /(?:[:({]|\(")$/.test(before.trimEnd());
+      typeText("\n" + before.match(/^ */)[0] + (opens ? "    " : ""));
+    } else if (start === code.selectionEnd && /^ {4,}\.$/.test(before)) {
+      // A line starting with ".." (like "..else:") goes back to the indentation of the line it continues
+      e.preventDefault();
+      code.setSelectionRange(lineStart, start);
+      typeText(before.slice(4) + ".");
+    }
   } else if (e.key === "Tab" && !e.shiftKey) {
     e.preventDefault();
-    code.setRangeText("    ", code.selectionStart, code.selectionEnd, "end");
+    typeText("    ");
   }
 });
 </script>
