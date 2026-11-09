@@ -72,7 +72,7 @@ local function write_messages(conn)
 end
 
 local function broadcast(value)
-    for _, name in ipairs(user_order) do send(name, value.text, value.kind) end
+    for _, name in ipairs(user_order) do queue_json(by_name[name], value) end
 end
 
 -- Sends a message to one player
@@ -196,7 +196,9 @@ end
 local entries = load_entries()
 game = Game.new({
     entries=entries,
-    announce=function(text) broadcast({type="announce", text=text}) end,
+    announce=function(text)
+        for _, name in ipairs(user_order) do send(name, text, "announce") end
+    end,
     record=save_entry,
     rules_changed=function(rules) broadcast({type="rules", rules=rules}) end,
 })
