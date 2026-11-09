@@ -19,12 +19,12 @@ local Game = require("nomic")
 local store = require("store")
 
 local config = {
-    host = "127.0.0.1",
-    port = 8080,
-    history_file = dir .. "history.lua",
-    max_message = 64 * 1024,  -- largest code submission accepted, in bytes
-    max_output = 64 * 1024,   -- longest single message sent to a client
-    send_timeout = 10,        -- drop clients that stop reading for this many seconds
+    host="127.0.0.1",
+    port=8080,
+    history_file=dir.."history.lua",
+    max_message=64 * 1024,  -- largest code submission accepted, in bytes
+    max_output=64 * 1024,   -- longest single message sent to a client
+    send_timeout=10,        -- drop clients that stop reading for this many seconds
 }
 
 do
@@ -72,7 +72,7 @@ local function write_messages(conn)
 end
 
 local function broadcast(value)
-    for _, name in ipairs(user_order) do queue_json(by_name[name], value) end
+    for _, name in ipairs(user_order) do send(name, value.text, value.kind) end
 end
 
 -- Sends a message to one player
@@ -82,7 +82,7 @@ local function send(name, text, kind)
     if #text > config.max_output then
         text = string.sub(text, 1, config.max_output) .. "\n... (truncated)"
     end
-    queue_json(conn, {type = "message", kind = kind, text = text})
+    queue_json(conn, {type="message", kind=kind, text=text})
     return true
 end
 
@@ -125,14 +125,14 @@ local function respond(stream, status, content_type, body)
 end
 
 local function play(server, ws, name)
-    local conn = {ws = ws, name = name, out = {}, wake = condition.new()}
+    local conn = {ws=ws, name=name, out={}, wake=condition.new()}
     by_name[name] = conn
     user_order[#user_order + 1] = name
     server.cq:wrap(write_messages, conn)
     log(name, "connected")
-    queue_json(conn, {type = "welcome", name = name})
-    broadcast({type = "users", users = user_order})
-    queue_json(conn, {type = "rules", rules = game:rules()})
+    queue_json(conn, {type="welcome", name=name})
+    broadcast({type="users", users=user_order})
+    queue_json(conn, {type="rules", rules=game:rules()})
     for _, text in ipairs(game.recent) do send(name, text, "announce") end
     game:join(name, function(text, kind) send(name, text, kind) end)
 
@@ -150,7 +150,7 @@ local function play(server, ws, name)
     conn.wake:signal()
     ws:close()
     log(name, "disconnected")
-    broadcast({type = "users", users = user_order})
+    broadcast({type="users", users=user_order})
 end
 
 local function on_stream(server, stream)
@@ -186,7 +186,7 @@ local function on_stream(server, stream)
         problem = "The name '" .. name .. "' is already taken"
     end
     if problem then
-        ws:send(json.encode({type = "rejected", text = problem}), "text", config.send_timeout)
+        ws:send(json.encode({type="rejected", text=problem}), "text", config.send_timeout)
         ws:close(1008, "invalid username")
         return
     end
@@ -195,23 +195,21 @@ end
 
 local entries = load_entries()
 game = Game.new({
-    entries = entries,
-    announce = function(text)
-        for _, name in ipairs(user_order) do send(name, text, "announce") end
-    end,
-    record = save_entry,
-    rules_changed = function(rules) broadcast({type = "rules", rules = rules}) end,
+    entries=entries,
+    announce=function(text) broadcast({type="announce", text=text}) end,
+    record=save_entry,
+    rules_changed=function(rules) broadcast({type="rules", rules=rules}) end,
 })
 if #entries > 0 then log("replayed", #entries, "events from", config.history_file) end
 
 local server = http_server.listen({
-    host = config.host,
-    port = config.port,
-    tls = false,
-    version = 1.1,
-    reuseaddr = true,
-    onstream = on_stream,
-    onerror = function(_, _, op, err) log("http error:", tostring(op), tostring(err)) end,
+    host=config.host,
+    port=config.port,
+    tls=false,
+    version=1.1,
+    reuseaddr=true,
+    onstream=on_stream,
+    onerror=function(_, _, op, err) log("http error:", tostring(op), tostring(err)) end,
 })
 assert(server:listen())
 log("listening on http://" .. config.host .. ":" .. config.port .. "/")

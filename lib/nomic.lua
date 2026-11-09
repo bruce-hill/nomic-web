@@ -36,8 +36,8 @@ local MAX_REQUEST = 64 * 1024
 local MAX_REQUESTS = 16       -- requests that one submission can send
 local MAX_TRIES = 2           -- times that one run can use (try enacting)
 local MAX_RECENT = 100        -- announcements shown to players when they connect
-local REPLAYED_LIMITS = {instructions = 1e6, memory = 256 * 1024}
-local LIVE_LIMITS = {instructions = 1e6, memory = 256 * 1024, seconds = 1}
+local REPLAYED_LIMITS = {instructions=1e6, memory=256 * 1024}
+local LIVE_LIMITS = {instructions=1e6, memory=256 * 1024, seconds=1}
 
 -- The kernel's syntax
 local kernel = [[
@@ -146,18 +146,18 @@ Game.__index = Game
 -- Make a sandbox with the kernel's functions. While it's replaying history, its output
 -- is hidden, and (try enacting) gives the same results it gave the first time.
 function Game:new_sandbox(output, send, is_copy)
-    local sandbox = {replaying = false, rules = {table.unpack(initial_rules)}}
+    local sandbox = {replaying=false, rules={table.unpack(initial_rules)}}
     sandbox.instance = nomsu.new{
-        output = function(text) if not sandbox.replaying then output(text) end end,
-        environment = {
-            send = function(request) if send then send(nomsu.plain_copy(request)) end end,
-            enact = function(code)
+        output=function(text) if not sandbox.replaying then output(text) end end,
+        environment={
+            send=function(request) if send then send(nomsu.plain_copy(request)) end end,
+            enact=function(code)
                 local ok, err = sandbox.instance:run(code)
                 if not ok then error(err, 0) end
                 local number = #sandbox.rules + 1
                 sandbox.rules[number] = "### Rule " .. number .. ": enacted during the game\n" .. code
             end,
-            try_enacting = function(code)
+            try_enacting=function(code)
                 if is_copy then error("A copy of the game can't try enacting anything.", 0) end
                 sandbox.tries = sandbox.tries + 1
                 if sandbox.tries > MAX_TRIES then error("That's too many tries at enacting.", 0) end
@@ -173,12 +173,12 @@ function Game:new_sandbox(output, send, is_copy)
                 if sandbox.recorded then table.insert(sandbox.recorded, problem or false) end
                 return problem
             end,
-            current_rules = function() return table.concat(sandbox.rules, "\n\n") end,
+            current_rules=function() return table.concat(sandbox.rules, "\n\n") end,
         },
-        loader = nomsu.chain_loaders(nomsu.table_loader{kernel = kernel},
+        loader=nomsu.chain_loaders(nomsu.table_loader{kernel=kernel},
             nomsu.file_loader({NOMSU_LIB})),
-        limits = REPLAYED_LIMITS,
-        random_seed = 1,
+        limits=REPLAYED_LIMITS,
+        random_seed=1,
     }
     assert(sandbox.instance:run("use \"kernel\""))
     sandbox.instance:pledge{"stdio"}
@@ -194,7 +194,7 @@ local function run_entry(sandbox, entry)
         ok, err = run(sandbox, entry.code)
     else
         local runtime = sandbox.instance.environment.RUNTIME_ENV
-        runtime.event = {player = entry.player, request = nomsu.plain_copy(entry.request)}
+        runtime.event = {player=entry.player, request=nomsu.plain_copy(entry.request)}
         ok, err = run(sandbox, "handle $event")
         runtime.event = nil
     end
@@ -225,7 +225,7 @@ function Game.new(opts)
     local self = setmetatable({}, Game)
     self.history, self.recent, self.joined = {}, {}, {}
     self.announce, self.record, self.rules_changed = opts.announce, opts.record, opts.rules_changed
-    for _, rule in ipairs(initial_rules) do table.insert(self.history, {code = rule}) end
+    for _, rule in ipairs(initial_rules) do table.insert(self.history, {code=rule}) end
     for _, entry in ipairs(opts.entries or {}) do
         table.insert(self.history, entry)
         if entry.request.type == "join" then self.joined[entry.player] = true end
@@ -242,7 +242,7 @@ function Game:handle(player, request, reply)
     if not ok or #text > MAX_REQUEST then
         return reply("That request can't be sent: " .. (ok and "it's too big" or text), "error")
     end
-    local entry = {player = player, request = request, recorded = {}}
+    local entry = {player=player, request=request, recorded={}}
     local rule_count = #self.game.rules
     local run_ok, err = run_entry(self.game, entry)
     local said = self.flush()
@@ -266,7 +266,7 @@ end
 function Game:join(player, reply)
     if self.joined[player] then return end
     self.joined[player] = true
-    self:handle(player, {type = "join", args = {}}, reply)
+    self:handle(player, {type="join", args={}}, reply)
 end
 
 -- A player submits some code, which runs in their own sandbox and reports back with

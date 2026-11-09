@@ -6,10 +6,10 @@ local store = require("store")
 local announced, replies, saved, rule_updates = {}, {}, {}, {}
 local function new_game(entries)
     return Game.new({
-        entries = entries,
-        announce = function(text) announced[#announced + 1] = text end,
-        record = function(entry) saved[#saved + 1] = store.serialize(entry) end,
-        rules_changed = function(rules) rule_updates[#rule_updates + 1] = #rules end,
+        entries=entries,
+        announce=function(text) announced[#announced + 1] = text end,
+        record=function(entry) saved[#saved + 1] = store.serialize(entry) end,
+        rules_changed=function(rules) rule_updates[#rule_updates + 1] = #rules end,
     })
 end
 local function reply(text, kind) replies[#replies + 1] = kind .. ": " .. text end

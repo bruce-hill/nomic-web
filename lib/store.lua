@@ -31,7 +31,7 @@ local function format_number(n)
     return string.find(text, "^-?%d+$") and text .. ".0" or text
 end
 
-local key_type_order = {boolean = 1, number = 2, string = 3}
+local key_type_order = {boolean=1, number=2, string=3}
 local function key_less(a, b)
     local ta, tb = type(a), type(b)
     if ta ~= tb then return key_type_order[ta] < key_type_order[tb] end
@@ -83,7 +83,7 @@ function store.serialize(value)
                     write(k, path, depth + 1)
                     out[#out + 1] = "]"
                 end
-                out[#out + 1] = " = "
+                out[#out + 1] = "="
                 write(rawget(v, k), path_to(path, k), depth + 1)
                 out[#out + 1] = ",\n"
             end
@@ -108,7 +108,7 @@ end
 -- (tables that were part of the state before) so rule code holding
 -- references to them, like `local proposals = state.proposals`, stays valid.
 function store.restore_into(target, source, owned, used)
-    used = used or {[target] = true}
+    used = used or {[target]=true}
     debug.setmetatable(target, nil)
     for k in next, target do
         if rawget(source, k) == nil then rawset(target, k, nil) end
