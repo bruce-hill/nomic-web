@@ -28,12 +28,11 @@
 -- Replaying history has to give the same results every time, so everything that gets
 -- replayed runs with limits that don't depend on how fast the server is.
 package.path = "/usr/local/share/nomsu/8.0.0/?.lua;" .. package.path
-local nomsu = require("nomsu_library")
+local nomsu = require("nomsu")
 local Limits = require("nomsu_limits")
 local store = require("store")
 local Buffer = require("buffer")
 
-local NOMSU_LIB = "/usr/local/share/nomsu/8.0.0/lib"
 local MAX_REQUEST = 64 * 1024
 local MAX_REQUESTS = 16       -- requests that one submission can send
 local MAX_TRIES = 2           -- times that one run can use (try enacting)
@@ -148,21 +147,20 @@ Sandbox.__index = Sandbox
 -- Make a sandbox with the kernel's functions and the starting rules
 function Sandbox.new()
     local self = setmetatable({rules={table.unpack(initial_rules)}, effects=SILENT}, Sandbox)
-    self.nomsu = nomsu.new{
-        output=function(text) self.effects.print(text) end,
+    self.nomsu = nomsu.Runtime{
+        print=function(text) self.effects.print(text) end,
         environment={
             send=function(request) self.effects.send(request) end,
             enact=function(code) self:enact(code) end,
             try_enacting=function(code) return self:try_enacting(code) end,
             current_rules=function() return table.concat(self.rules, "\n\n") end,
         },
-        loader=nomsu.chain_loaders(nomsu.table_loader{kernel=kernel},
-            nomsu.file_loader({NOMSU_LIB})),
+        modules={kernel=kernel},
         limits=REPLAYED_LIMITS,
-        random_seed=1,
     }
+    assert(self.nomsu:run("seed random with 1"))
     assert(self.nomsu:run("use \"kernel\""))
-    self.nomsu:pledge{"stdio"}
+    self.nomsu:seal()
     for _, rule in ipairs(initial_rules) do assert(self:run(rule, SILENT)) end
     return self
 end
