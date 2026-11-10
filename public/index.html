@@ -75,6 +75,7 @@
                  font: 12px/1.5 var(--mono); }
   #completions .language { opacity: .6; }
   #completions .more { color: var(--muted); }
+  #completions .chosen { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
   .here { text-decoration: underline; text-underline-offset: 3px; }
   button.rule-link { background: none; color: var(--accent); padding: 0; margin-left: 8px; font: inherit;
                      font-size: 11px; font-weight: normal; }
@@ -493,50 +494,86 @@ function fitsBeforeCursor() {
   return null;
 }
 
-// While Tab's list of actions is showing, it stays instead of the hint
-let listing = false;
+// While Tab is going through the actions that fit, which ones they are, and where the
+// text that Tab types goes: {fits, chosen, start, lead, end, value}. The text from start to
+// end is lead (a space, if one's needed) and what the chosen action adds, and value is
+// what the editor had then, to tell if anything else changed it.
+let cycle = null;
 
 // Complete the action being typed, as far as all the actions that fit it agree, and show
-// them if that leaves more than one. The game's actions come before Nomsu's, so if any
-// of them fit, only they're completed. Returns whether any action fits.
-function complete() {
+// them if that leaves more than one. Pressing Tab again goes through them, or back with
+// `step` -1. Returns whether any action fits.
+function complete(step = 1) {
+  if (cycle && code.value === cycle.value && code.selectionStart === cycle.end) {
+    const n = cycle.fits.length;
+    cycle.chosen = cycle.chosen < 0 && step < 0 ? n - 1 : (cycle.chosen + step + n) % n;
+    choose();
+    return true;
+  }
+  cycle = null;
   const found = fitsBeforeCursor();
   if (!found) return false;
-  const {typed} = found, game = found.fits.filter((f) => f.action.game);
-  const fits = game.length ? game : found.fits;
+  const {typed, fits} = found;
   let common = fits[0].text;
   for (const {text} of fits) while (!text.startsWith(common)) common = common.slice(0, -1);
-  if (common) typeText((typed.partial || typed.spaced ? "" : " ") + common);
-  if (common && fits.every((f) => f.text === common)) {
-    listing = false;
+  if (fits.every((f) => f.text === common)) {
+    if (common) typeText((typed.partial || typed.spaced ? "" : " ") + common);
     updateHint();
+    return true;
+  }
+  cycle = {fits, at: found.at, chosen: -1, start: code.selectionStart, lead: typed.partial || typed.spaced ? "" : " "};
+  if (common) {
+    typeText(cycle.lead + common);
+    cycle.end = code.selectionStart;
+    cycle.value = code.value;
+    showActions(fits.map((f) => f.action), found.at);
   } else {
-    const now = (common && fitsBeforeCursor()) || found;
-    showActions(now.fits.map((f) => f.action), now.at);
-    listing = true;
+    // Typing what they agree on wouldn't do anything, so go to the first one
+    cycle.end = cycle.start;
+    cycle.chosen = step > 0 ? 0 : fits.length - 1;
+    choose();
   }
   return true;
 }
 
+// Type what the action that Tab is at adds, in place of what Tab typed before
+function choose() {
+  code.setSelectionRange(cycle.start, cycle.end);
+  const text = cycle.lead + cycle.fits[cycle.chosen].text;
+  if (text) typeText(text);
+  else if (cycle.start !== cycle.end && !document.execCommand("delete")) {
+    code.setRangeText("", cycle.start, cycle.end, "end");
+    renderCode();
+  }
+  cycle.end = code.selectionStart;
+  cycle.value = code.value;
+  showActions(cycle.fits.map((f) => f.action), cycle.at, cycle.chosen);
+}
+
 // Show which actions fit what's being typed, if there are only a few
 function updateHint() {
-  if (listing) return;
+  if (cycle) return;
   const found = fitsBeforeCursor();
   showActions(found && found.fits.length <= 3 ? found.fits.map((f) => f.action) : [], found && found.at);
 }
 
-function showActions(list, at) {
+// Show some actions, with their word or argument number `at` underlined, and the one
+// numbered `chosen` marked
+function showActions(list, at, chosen = -1) {
   const box = $("completions"), MAX = 30;
+  // Show the chosen action, even if it's far down the list
+  const first = Math.max(0, chosen - MAX + 1);
   box.classList.toggle("hidden", !list.length);
-  box.replaceChildren(...list.slice(0, MAX).map((action) => {
+  box.replaceChildren(...list.slice(first, first + MAX).map((action, i) => {
     const span = patternElement(action, at);
-    if (!action.game) span.className = "language";
+    span.classList.toggle("language", !action.game);
+    span.classList.toggle("chosen", first + i === chosen);
     return span;
   }));
-  if (list.length > MAX) {
+  if (list.length > first + MAX) {
     const more = document.createElement("span");
     more.className = "more";
-    more.textContent = `and ${list.length - MAX} more`;
+    more.textContent = `and ${list.length - first - MAX} more`;
     box.append(more);
   }
 }
@@ -564,8 +601,8 @@ function syncScroll() {
   $("code-hl").scrollLeft = code.scrollLeft;
 }
 code.addEventListener("input", () => { renderCode(); updateHint(); });
-code.addEventListener("click", updateHint);
-code.addEventListener("keyup", (e) => { if (e.key !== "Tab") updateHint(); });
+code.addEventListener("click", () => { cycle = null; updateHint(); });
+code.addEventListener("keyup", (e) => { if (e.key !== "Tab" && e.key !== "Shift") updateHint(); });
 code.addEventListener("scroll", syncScroll);
 
 $("editor").addEventListener("submit", (e) => { e.preventDefault(); submit(); code.focus(); });
@@ -580,7 +617,7 @@ function typeText(text) {
 
 code.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;
-  if (e.key !== "Tab") listing = false;
+  if (e.key !== "Tab" && e.key !== "Shift") cycle = null;
   if (mod && e.key === "Enter") {
     e.preventDefault();
     submit();
@@ -616,7 +653,12 @@ code.addEventListener("keydown", (e) => {
         renderCode();
       }
     }
-  } else if (e.key === "Tab" && !e.shiftKey) {
+  } else if (e.key === "Tab" && e.shiftKey) {
+    if (cycle) {
+      e.preventDefault();
+      complete(-1);
+    }
+  } else if (e.key === "Tab") {
     e.preventDefault();
     if (code.selectionStart !== code.selectionEnd || !complete()) typeText("    ");
   }
