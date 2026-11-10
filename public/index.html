@@ -55,7 +55,7 @@
   textarea, #code-hl { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
                        font: 13px/1.45 var(--mono); tab-size: 4; white-space: pre-wrap;
                        overflow-wrap: break-word; word-break: normal; scrollbar-gutter: stable; }
-  textarea { flex: 1; min-height: 84px; max-height: 40vh; resize: vertical; position: relative;
+  textarea { flex: 1; min-height: 84px; max-height: 40vh; resize: none; position: relative;
              background: transparent; color: transparent; caret-color: var(--text); }
   textarea::placeholder { color: var(--muted); }
   textarea::selection { background: rgba(122,162,247,.3); color: transparent; }
@@ -600,7 +600,15 @@ function submit() {
 // A trailing newline needs something after it to take up space like it does in the textarea
 function renderCode() {
   $("code-hl").innerHTML = highlightNomsu(code.value) + (code.value.endsWith("\n") ? " " : "");
+  fitCode();
   syncScroll();
+}
+// Grow the textarea to fit what's typed, up to its max-height, keeping the log pinned if it was at the bottom
+function fitCode() {
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  code.style.height = "auto";
+  code.style.height = (code.scrollHeight + code.offsetHeight - code.clientHeight) + "px";
+  if (atBottom) log.scrollTop = log.scrollHeight;
 }
 function syncScroll() {
   $("code-hl").scrollTop = code.scrollTop;
@@ -610,6 +618,7 @@ code.addEventListener("input", () => { renderCode(); updateHint(); });
 code.addEventListener("click", () => { cycle = null; updateHint(); });
 code.addEventListener("keyup", (e) => { if (e.key !== "Tab" && e.key !== "Shift") updateHint(); });
 code.addEventListener("scroll", syncScroll);
+window.addEventListener("resize", fitCode);
 
 $("editor").addEventListener("submit", (e) => { e.preventDefault(); submit(); code.focus(); });
 
