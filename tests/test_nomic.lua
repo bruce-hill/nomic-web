@@ -97,6 +97,18 @@ propose:
         print "\$player rated \$thing: \$stars, \$note."]], reply)
 game:submit("carol", 'rate "soup" with (nil) and "salty"', reply)
 expect(has(announced, "carol rated soup: nil, salty."), "nil arguments keep their position")
+
+-- Players can see which actions exist, and which are the game's rather than Nomsu's
+local function action(pattern)
+    for _, a in ipairs(game:actions()) do
+        if a.pattern == pattern then return a end
+    end
+end
+expect(action("rate $thing with $stars and $note").game, "the rules' actions are listed")
+expect(action("on $pattern from $player $body").game, "the kernel's actions are listed")
+expect(action("$list joined with $glue") and not action("$list joined with $glue").game,
+    "Nomsu's actions are listed")
+expect(action("$ isn't empty"), "actions are listed the way they're typed")
 game:submit("bob", [[
 propose:
     set the handler for "shrug" to ({$player, $how} -> (print "\$player shrugs \$how."))]], reply)

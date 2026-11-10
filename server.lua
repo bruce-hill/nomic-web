@@ -110,6 +110,7 @@ local function play(server, ws, name)
     queue_json(conn, {type="welcome", name=name, seq=#game.history})
     broadcast({type="users", users=user_order})
     queue_json(conn, {type="rules", rules=game:rules()})
+    queue_json(conn, {type="actions", actions=game:actions()})
     for _, said in ipairs(game.recent) do send(name, said.text, "announce", said.seq) end
     -- Like submitting, joining must not skip the cleanup below if it fails
     local ok, err = pcall(game.join, game, name, function(text, kind) send(name, text, kind) end)
@@ -185,7 +186,10 @@ game = Game.new({
         local ok, err = history:append(entry, game.history)
         if not ok then log("saving the game failed (it'll be saved in full next time):", tostring(err)) end
     end,
-    rules_changed=function(rules) broadcast({type="rules", rules=rules}) end,
+    rules_changed=function(rules)
+        broadcast({type="rules", rules=rules})
+        broadcast({type="actions", actions=game:actions()})
+    end,
 })
 if #entries > 0 then log("replayed", #entries, "events from", config.history_file) end
 

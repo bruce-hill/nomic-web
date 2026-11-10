@@ -30,6 +30,8 @@
 package.path = "/usr/local/share/nomsu/8.0.0/?.lua;" .. package.path
 local nomsu = require("nomsu")
 local Limits = require("nomsu_limits")
+local NOMSU_DIRECTORY = require("nomsu_environment").NOMSU_DIRECTORY
+local Text = require("text")
 local store = require("store")
 local Buffer = require("buffer")
 
@@ -165,6 +167,56 @@ function Sandbox.new()
     return self
 end
 
+-- How an action that's defined by some function is used, like "greet $who nicely", from
+-- its stub ("greet 1 nicely") and the names of the function's parameters. Compile rules
+-- get two other arguments before the action's.
+local function action_pattern(stub, fn, skip)
+    local names, info = {}, debug.getinfo(fn, "u")
+    for i = skip + 1, info.nparams do
+        local name = Text.from_lua_id(debug.getlocal(fn, i))
+        names[#names + 1] = string.find(name, " ") and "$(" .. name .. ")" or "$" .. name
+    end
+    if info.isvararg then names[#names + 1] = "$..." end
+    -- A stub leaves out the arguments at the end, so they go after its last word
+    local used = 0
+    local pattern = string.gsub(stub, "%f[%w]%d+%f[%W]", function(n)
+        used = math.max(used, tonumber(n))
+        return names[tonumber(n)] or "$"
+    end)
+    for i = used + 1, #names do pattern = pattern .. " " .. names[i] end
+    -- Stubs have spaces around apostrophes, like "isn ' t", which aren't typed
+    return (string.gsub(pattern, " ' ", "'"))
+end
+
+-- Whether a function is the game's (defined by the kernel or the rules), rather than
+-- part of Nomsu, which is written in Nomsu's directory or in C
+local function is_the_games(fn)
+    local source = debug.getinfo(fn, "S").source
+    return string.sub(source, 1, 1) == "@" and string.sub(source, 2, #NOMSU_DIRECTORY + 1) ~= NOMSU_DIRECTORY
+end
+
+-- The actions that can be used in this sandbox, sorted, as {pattern=text, game=boolean},
+-- where pattern is how the action is used, like "greet $who nicely", and game is whether
+-- the kernel or the rules define it (otherwise it's part of Nomsu).
+function Sandbox:actions()
+    local env, found, seen = self.nomsu.environment, {}, {}
+    local function add(stub, fn, skip)
+        if type(stub) ~= "string" or type(fn) ~= "function" or stub == "" or string.match(stub, "^[%u_ ]+$") then
+            return
+        end
+        local pattern = action_pattern(stub, fn, skip)
+        if seen[pattern] then return end
+        seen[pattern] = true
+        found[#found + 1] = {pattern=pattern, game=is_the_games(fn)}
+    end
+    for name, fn in pairs(env.RUNTIME_ENV) do
+        if type(name) == "string" then add(Text.from_lua_id(name), fn, 0) end
+    end
+    for stub, rule in pairs(env.COMPILE_RULES) do add(stub, rule, 2) end
+    table.sort(found, function(a, b) return a.pattern < b.pattern end)
+    return found
+end
+
 function Sandbox:enact(code)
     local ok, err = self.nomsu:run(code)
     if not ok then error(err, 0) end
@@ -279,6 +331,11 @@ end
 -- The rules in force, as a list of code, in the order they took effect
 function Game:rules()
     return self.sandbox.rules
+end
+
+-- The actions that players can use (see Sandbox:actions)
+function Game:actions()
+    return self.sandbox:actions()
 end
 
 -- A player joins the game, if they haven't already
