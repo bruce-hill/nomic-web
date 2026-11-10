@@ -497,11 +497,13 @@ function fitsBeforeCursor() {
 let listing = false;
 
 // Complete the action being typed, as far as all the actions that fit it agree, and show
-// them if that leaves more than one. Returns whether any action fits.
+// them if that leaves more than one. The game's actions come before Nomsu's, so if any
+// of them fit, only they're completed. Returns whether any action fits.
 function complete() {
   const found = fitsBeforeCursor();
   if (!found) return false;
-  const {typed, fits} = found;
+  const {typed} = found, game = found.fits.filter((f) => f.action.game);
+  const fits = game.length ? game : found.fits;
   let common = fits[0].text;
   for (const {text} of fits) while (!text.startsWith(common)) common = common.slice(0, -1);
   if (common) typeText((typed.partial || typed.spaced ? "" : " ") + common);
