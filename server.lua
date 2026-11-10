@@ -119,7 +119,8 @@ local function play(server, ws, name)
     for text in ws:each() do
         if #text > config.max_message then break end
         local ok, err = pcall(game.submit, game, name, text, function(reply, kind) send(name, reply, kind) end)
-        if not ok then log("internal error:", tostring(err)) end
+        if not ok then log("internal error:", tostring(err))
+        elseif err then queue_json(conn, {type="uncompiled", text=text}) end
     end
 
     by_name[name] = nil

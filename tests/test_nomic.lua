@@ -74,6 +74,16 @@ announced = {}
 game:submit("bob", 'propose:\n    print (1 + {})', reply)
 expect(has(announced, "rejected"), "proposals with errors are rejected")
 expect(#game:rules() == 6, "rejected proposals don't join the rules")
+expect(not game:submit("bob", 'propose:\n    print (1 + {})', reply), "errors when running aren't compile errors")
+
+-- Code that can't be compiled says why, and the player is told so they can fix it
+announced, replies = {}, {}
+expect(game:submit("bob", 'propose:\n    stop', reply), "proposals that don't compile are reported")
+expect(has(announced, "Couldn't compile this code: break outside loop"), "proposals that don't compile say why")
+expect(game:submit("bob", 'stop', reply), "code that doesn't compile is reported")
+expect(has(replies, "error: Couldn't compile this code: break outside loop"), "code that doesn't compile says why")
+expect(game:submit("bob", 'print (foo }', reply), "code that doesn't parse is reported")
+expect(#game:rules() == 6, "proposals that don't compile don't join the rules")
 
 -- Requests that nothing handles are reported
 announced = {}

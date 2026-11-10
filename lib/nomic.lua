@@ -114,13 +114,32 @@ public:
         print "Your code runs in your own copy of the game. Only requests affect the real game:\n  say \"hello\"\n  propose:\n      on (wave at $other) from $player:\n          print \"\\$player waves at \\$other\"\nTo look around, use print, which only you can see:\n  print $game.players\n  print (current rules)\nTab completes actions as you type, and the Rules panel lists all of them."]],
 }
 
--- Nomsu's error messages show the code where the error happened. Just keep the message.
+-- Nomsu's error messages show the code where the error happened. Just keep the message,
+-- and whether the error was that the code couldn't be compiled.
 local function short(err)
     if type(err) == "table" and err.limit then
         return "That went over the " .. tostring(err.limit) .. " limit."
     end
     err = string.gsub(tostring(err), "\027%[[%d;]*m", "")
-    return string.match(err, "%^+%s*\n%s*([^\n]-)%s*\n") or string.match(err, "[^\n]*")
+    -- When Lua can't compile the code that Nomsu made, the message comes after that code,
+    -- and starts with where the code came from, like "<anonymous file #3>[1:5]:2: "
+    if string.match(err, "^Failed to compile generated code:") then
+        local message = string.match(err, "\n\n[^\n]-:%d+: ([^\n]*)") or string.match(err, "\n\n([^\n]*)")
+        return "Couldn't compile this code: " .. (message or "unknown error"), true
+    end
+    -- Otherwise the message is in a box under the code, indented two spaces and wrapped
+    -- across lines, and it can be followed by a suggestion
+    local first_line = string.match(err, "[^\n]*")
+    local words = {}
+    for line in string.gmatch(err, "[^\n]+") do
+        local text = string.match(line, "^  (%S.-)%s*$")
+        if text and string.match(text, "^Suggestion:") then break end
+        if text then words[#words + 1] = text
+        elseif #words > 0 then break end
+    end
+    local message = #words > 0 and table.concat(words, " ") or first_line
+    return message, string.find(first_line, "Parse error at", 1, true) ~= nil
+        or string.find(first_line, "Compile error at", 1, true) ~= nil
 end
 
 -- Sandboxed code can only reach the outside world through its effects, which are given
@@ -272,8 +291,8 @@ function Game:fork()
 end
 
 -- Try running some code in a copy of the game, and return the problem with it (or nil
--- if there isn't one). Building the copy is the kernel's work, so it doesn't count
--- against the limits.
+-- if there isn't one), and whether the problem is that it couldn't be compiled.
+-- Building the copy is the kernel's work, so it doesn't count against the limits.
 function Game:trial(code)
     return Limits.run_unlimited(function()
         local ok, err = self:fork():run(code, SILENT)
@@ -310,21 +329,23 @@ function Game.new(opts)
     return self
 end
 
--- The game handles a request. Problems are reported with reply(text, "error").
+-- The game handles a request. Problems are reported with reply(text, "error"). Returns
+-- whether some code that the rules tried enacting couldn't be compiled.
 function Game:handle(player, request, reply)
     local ok, text = pcall(store.serialize, request)
     if not ok or #text > MAX_REQUEST then
         return reply("That request can't be sent: " .. (ok and "it's too big" or text), "error")
     end
     local buf = Buffer.new()
-    local recorded = {}
+    local recorded, uncompiled = {}, false
     local entry = {player=player, request=request, recorded=recorded}
     local rule_count = #self.sandbox.rules
     local run_ok, err = self.sandbox:handle(entry, {
         print=function(text) buf:write(text) end,
         send=ignore,
         try=function(code)
-            local problem = self:trial(code)
+            local problem, problem_uncompiled = self:trial(code)
+            uncompiled = uncompiled or problem_uncompiled
             table.insert(recorded, problem or false)
             return problem
         end,
@@ -336,6 +357,7 @@ function Game:handle(player, request, reply)
     if entry.said then self.announce(said, #self.history) end
     if #self.sandbox.rules ~= rule_count then self.rules_changed(self.sandbox.rules) end
     if not run_ok then reply("The game had an error: " .. short(err), "error") end
+    return uncompiled
 end
 
 -- The rules in force, as a list of code, in the order they took effect
@@ -355,7 +377,9 @@ function Game:join(player, reply)
 end
 
 -- A player submits some code, which runs in their own sandbox and reports back with
--- reply(text, kind). Then the game handles the requests they sent.
+-- reply(text, kind). Then the game handles the requests they sent. Returns whether the
+-- code, or code that the game tried enacting for it (like a proposal), couldn't be
+-- compiled, so the player can fix it.
 function Game:submit(player, code, reply)
     local buf = Buffer.new()
     local requests = {}
@@ -369,10 +393,16 @@ function Game:submit(player, code, reply)
     })
     local output = buf:flush()
     if output ~= "" then reply(output, "result") end
-    if not ok then reply(short(err), "error") end
-    for _, request in ipairs(requests) do
-        self:handle(player, request, reply)
+    local uncompiled = false
+    if not ok then
+        local problem
+        problem, uncompiled = short(err)
+        reply(problem, "error")
     end
+    for _, request in ipairs(requests) do
+        uncompiled = self:handle(player, request, reply) or uncompiled
+    end
+    return uncompiled
 end
 
 return Game

@@ -328,6 +328,13 @@ function connect(name) {
       showRules(msg.rules);
     } else if (msg.type === "actions") {
       setActions(msg.actions);
+    } else if (msg.type === "uncompiled") {
+      // Code that couldn't be compiled comes back to be fixed, unless something else was typed
+      if (!code.value) {
+        code.value = msg.text;
+        renderCode();
+        updateHint();
+      }
     } else if (msg.type === "message") {
       if (msg.seq !== undefined) {
         if (msg.seq <= lastSeq) return;
