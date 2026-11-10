@@ -111,7 +111,7 @@ on (say $message) from $player:
 ### Rule 5: how to play
 public:
     (help) means:
-        print "Your code runs in your own copy of the game. Only requests affect the real game:\n  say \"hello\"\n  propose:\n      on (wave at $other) from $player:\n          print \"\\$player waves at \\$other\"\nTo look around, use print, which only you can see:\n  print $game.players\n  print (current rules)"]],
+        print "Your code runs in your own copy of the game. Only requests affect the real game:\n  say \"hello\"\n  propose:\n      on (wave at $other) from $player:\n          print \"\\$player waves at \\$other\"\nTo look around, use print, which only you can see:\n  print $game.players\n  print (current rules)\nTab completes actions as you type, and the Rules panel lists all of them."]],
 }
 
 -- Nomsu's error messages show the code where the error happened. Just keep the message.
@@ -148,7 +148,8 @@ Sandbox.__index = Sandbox
 
 -- Make a sandbox with the kernel's functions and the starting rules
 function Sandbox.new()
-    local self = setmetatable({rules={table.unpack(initial_rules)}, effects=SILENT}, Sandbox)
+    -- rule_numbers: which rule some code that was run is, by its text
+    local self = setmetatable({rules={table.unpack(initial_rules)}, rule_numbers={}, effects=SILENT}, Sandbox)
     self.nomsu = nomsu.Runtime{
         print=function(text) self.effects.print(text) end,
         environment={
@@ -163,7 +164,10 @@ function Sandbox.new()
     assert(self.nomsu:run("seed random with 1"))
     assert(self.nomsu:run("use \"kernel\""))
     self.nomsu:seal()
-    for _, rule in ipairs(initial_rules) do assert(self:run(rule, SILENT)) end
+    for number, rule in ipairs(initial_rules) do
+        self.rule_numbers[rule] = number
+        assert(self:run(rule, SILENT))
+    end
     return self
 end
 
@@ -195,9 +199,10 @@ local function is_the_games(fn)
     return string.sub(source, 1, 1) == "@" and string.sub(source, 2, #NOMSU_DIRECTORY + 1) ~= NOMSU_DIRECTORY
 end
 
--- The actions that can be used in this sandbox, sorted, as {pattern=text, game=boolean},
--- where pattern is how the action is used, like "greet $who nicely", and game is whether
--- the kernel or the rules define it (otherwise it's part of Nomsu).
+-- The actions that can be used in this sandbox, sorted, as {pattern=text, game=boolean,
+-- rule=number}, where pattern is how the action is used, like "greet $who nicely", game
+-- is whether the kernel or the rules define it (otherwise it's part of Nomsu), and rule
+-- is the number of the rule that defines it, if one does.
 function Sandbox:actions()
     local env, found, seen = self.nomsu.environment, {}, {}
     local function add(stub, fn, skip)
@@ -207,7 +212,11 @@ function Sandbox:actions()
         local pattern = action_pattern(stub, fn, skip)
         if seen[pattern] then return end
         seen[pattern] = true
-        found[#found + 1] = {pattern=pattern, game=is_the_games(fn)}
+        -- Nomsu keeps the code that it ran from each chunk, which is named like
+        -- "<anonymous file #3>", and functions know which chunk they're from
+        local chunk = string.match(debug.getinfo(fn, "S").source, "^@(.-)%[")
+        local rule = chunk and self.rule_numbers[env.SOURCES[chunk]]
+        found[#found + 1] = {pattern=pattern, game=is_the_games(fn), rule=rule}
     end
     for name, fn in pairs(env.RUNTIME_ENV) do
         if type(name) == "string" then add(Text.from_lua_id(name), fn, 0) end
@@ -222,6 +231,7 @@ function Sandbox:enact(code)
     if not ok then error(err, 0) end
     local number = #self.rules + 1
     self.rules[number] = "### Rule " .. number .. ": enacted during the game\n" .. code
+    self.rule_numbers[code] = number
 end
 
 function Sandbox:try_enacting(code)

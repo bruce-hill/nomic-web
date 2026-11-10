@@ -105,6 +105,8 @@ local function action(pattern)
     end
 end
 expect(action("rate $thing with $stars and $note").game, "the rules' actions are listed")
+expect(action("rate $thing with $stars and $note").rule == #game:rules(), "actions say which rule defines them")
+expect(action("join").rule == 2, "the starting rules' actions say which rule defines them")
 expect(action("on $pattern from $player $body").game, "the kernel's actions are listed")
 expect(action("$list joined with $glue") and not action("$list joined with $glue").game,
     "Nomsu's actions are listed")

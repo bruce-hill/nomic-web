@@ -75,6 +75,16 @@
                  font: 12px/1.5 var(--mono); }
   #completions .language { opacity: .6; }
   #completions .more { color: var(--muted); }
+  .here { text-decoration: underline; text-underline-offset: 3px; }
+  button.rule-link { background: none; color: var(--accent); padding: 0; margin-left: 8px; font: inherit;
+                     font-size: 11px; font-weight: normal; }
+  button.rule-link:hover { text-decoration: underline; }
+  #rules h2 + p + .action-list, #rules details { margin-bottom: 14px; }
+  .action-list { font: 12px/1.6 var(--mono); }
+  .action-list > div { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .action-list .built-in { color: var(--muted); font: 11px system-ui, sans-serif; white-space: nowrap; }
+  #rules summary { color: var(--muted); font-size: 12px; cursor: pointer; margin-bottom: 4px; }
+  #rules pre.flash { outline: 2px solid var(--accent); }
   textarea:focus, input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   button { background: var(--accent); color: #11131a; border: 0; border-radius: 6px; padding: 0 18px;
            font-weight: 600; cursor: pointer; }
@@ -111,6 +121,13 @@
 <main>
   <div id="log" aria-live="polite"></div>
   <aside id="rules">
+    <h2>Actions</h2>
+    <p>What you can do, which changes as the rules do. Tab completes these as you type.</p>
+    <div id="action-list" class="action-list"></div>
+    <details>
+      <summary>Nomsu's own actions</summary>
+      <div id="language-actions" class="action-list"></div>
+    </details>
     <h2>Current rules</h2>
     <p>Rules run in order, so later rules replace anything they redefine.</p>
     <div id="rule-list"></div>
@@ -261,8 +278,9 @@ function addLine(text, kind) {
 
 function showRules(rules) {
   const list = $("rule-list"), grew = list.children.length && rules.length > list.children.length;
-  list.replaceChildren(...rules.map((rule) => {
+  list.replaceChildren(...rules.map((rule, i) => {
     const pre = document.createElement("pre");
+    pre.id = `rule-${i + 1}`;
     pre.innerHTML = highlightNomsu(rule);
     return pre;
   }));
@@ -351,6 +369,53 @@ function setActions(list) {
   actions = list.map((a) => ({...a, words: a.pattern.match(PATTERN_TOKEN).map((t) => t[0] === "$" ? null : t)}));
   // The game's actions come first, since they're what the game is about
   actions.sort((a, b) => b.game - a.game);
+  const row = (action) => {
+    const div = document.createElement("div");
+    div.append(patternElement(action));
+    if (!action.rule && action.game) {
+      const span = document.createElement("span");
+      span.className = "built-in";
+      span.textContent = "built in";
+      div.append(span);
+    }
+    return div;
+  };
+  $("action-list").replaceChildren(...actions.filter((a) => a.game).map(row));
+  $("language-actions").replaceChildren(...actions.filter((a) => !a.game).map(row));
+  updateHint();
+}
+
+// An action's pattern, highlighted, with its word or argument number `at` underlined, and
+// a link to the rule that defines it
+function patternElement(action, at) {
+  const span = document.createElement("span");
+  let html = "", last = 0, i = 0;
+  for (const m of action.pattern.matchAll(PATTERN_TOKEN)) {
+    const token = highlightNomsu(m[0]);
+    html += action.pattern.slice(last, m.index) + (i++ === at ? `<span class="here">${token}</span>` : token);
+    last = m.index + m[0].length;
+  }
+  span.innerHTML = html;
+  if (action.rule) {
+    const link = document.createElement("button");
+    link.type = "button";
+    link.className = "rule-link";
+    link.textContent = `rule ${action.rule}`;
+    // Keep the cursor in the editor
+    link.addEventListener("mousedown", (e) => e.preventDefault());
+    link.addEventListener("click", () => showRule(action.rule));
+    span.append(link);
+  }
+  return span;
+}
+
+function showRule(number) {
+  const pre = $(`rule-${number}`);
+  if (!pre) return;
+  $("rules").classList.remove("hidden");
+  pre.scrollIntoView({block: "nearest", behavior: "smooth"});
+  pre.classList.add("flash");
+  setTimeout(() => pre.classList.remove("flash"), 1500);
 }
 
 // The action being typed on the current line before the cursor, inside whatever parens,
@@ -406,11 +471,13 @@ function completion(words, tokens, partial) {
   return text;
 }
 
-// Complete the action being typed, as far as all the actions that fit it agree, and show
-// them if that leaves more than one. Returns whether any action fits.
-function complete() {
+// The actions that fit what's being typed before the cursor, as {typed, fits, at}: typed
+// is from actionBeforeCursor, fits is a list of {action, text}, where text is what
+// completion() gives, and at is which of their words or arguments the cursor is at.
+// Returns null if nothing fits.
+function fitsBeforeCursor() {
   const typed = actionBeforeCursor();
-  if (!typed || !typed.tokens.length) return false;
+  if (!typed || !typed.tokens.length) return null;
   const {tokens, partial} = typed;
   // An action can be used inside another one, like "print current rules", so if nothing
   // fits all of what's been typed, try what comes after each word
@@ -421,22 +488,46 @@ function complete() {
       const text = completion(action.words, tokens.slice(k), partial);
       if (text !== null) fits.push({action, text});
     }
-    if (!fits.length) continue;
-    let common = fits[0].text;
-    for (const {text} of fits) while (!text.startsWith(common)) common = common.slice(0, -1);
-    if (common) typeText((partial || typed.spaced ? "" : " ") + common);
-    showCompletions(common && fits.every((f) => f.text === common) ? [] : fits.map((f) => f.action));
-    return true;
+    if (fits.length) return {typed, fits, at: tokens.length - k - (partial ? 1 : 0)};
   }
-  return false;
+  return null;
 }
 
-function showCompletions(list) {
+// While Tab's list of actions is showing, it stays instead of the hint
+let listing = false;
+
+// Complete the action being typed, as far as all the actions that fit it agree, and show
+// them if that leaves more than one. Returns whether any action fits.
+function complete() {
+  const found = fitsBeforeCursor();
+  if (!found) return false;
+  const {typed, fits} = found;
+  let common = fits[0].text;
+  for (const {text} of fits) while (!text.startsWith(common)) common = common.slice(0, -1);
+  if (common) typeText((typed.partial || typed.spaced ? "" : " ") + common);
+  if (common && fits.every((f) => f.text === common)) {
+    listing = false;
+    updateHint();
+  } else {
+    const now = (common && fitsBeforeCursor()) || found;
+    showActions(now.fits.map((f) => f.action), now.at);
+    listing = true;
+  }
+  return true;
+}
+
+// Show which actions fit what's being typed, if there are only a few
+function updateHint() {
+  if (listing) return;
+  const found = fitsBeforeCursor();
+  showActions(found && found.fits.length <= 3 ? found.fits.map((f) => f.action) : [], found && found.at);
+}
+
+function showActions(list, at) {
   const box = $("completions"), MAX = 30;
   box.classList.toggle("hidden", !list.length);
   box.replaceChildren(...list.slice(0, MAX).map((action) => {
-    const span = document.createElement("span");
-    span.innerHTML = highlightNomsu(action.pattern);
+    const span = patternElement(action, at);
     if (!action.game) span.className = "language";
     return span;
   }));
@@ -458,6 +549,7 @@ function submit() {
   historyPos = history.length;
   code.value = "";
   renderCode();
+  updateHint();
 }
 
 // A trailing newline needs something after it to take up space like it does in the textarea
@@ -469,7 +561,9 @@ function syncScroll() {
   $("code-hl").scrollTop = code.scrollTop;
   $("code-hl").scrollLeft = code.scrollLeft;
 }
-code.addEventListener("input", renderCode);
+code.addEventListener("input", () => { renderCode(); updateHint(); });
+code.addEventListener("click", updateHint);
+code.addEventListener("keyup", (e) => { if (e.key !== "Tab") updateHint(); });
 code.addEventListener("scroll", syncScroll);
 
 $("editor").addEventListener("submit", (e) => { e.preventDefault(); submit(); code.focus(); });
@@ -484,7 +578,7 @@ function typeText(text) {
 
 code.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;
-  if (e.key !== "Tab") showCompletions([]);
+  if (e.key !== "Tab") listing = false;
   if (mod && e.key === "Enter") {
     e.preventDefault();
     submit();
